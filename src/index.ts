@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import './lib/zodErrorMap';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
