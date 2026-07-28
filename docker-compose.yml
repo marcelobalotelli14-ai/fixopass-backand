@@ -1,0 +1,38 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fixopass
+      POSTGRES_PASSWORD: fixopass
+      POSTGRES_DB: fixopass
+    ports:
+      - '5432:5432'
+    volumes:
+      - fixopass_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U fixopass']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://fixopass:fixopass@db:5432/fixopass?schema=public
+      PORT: 3000
+      JWT_SECRET: ${JWT_SECRET:-troque-por-um-segredo-forte-em-producao}
+    ports:
+      - '3000:3000'
+    # Aplica as migrations automaticamente ao subir (ok para piloto;
+    # em produção séria, prefira rodar migrations num passo de deploy separado).
+    command: sh -c "npx prisma migrate deploy && node dist/index.js"
+
+volumes:
+  fixopass_db_data:

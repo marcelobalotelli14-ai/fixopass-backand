@@ -1,0 +1,265 @@
+import { Router } from 'express';
+import bcrypt from 'bcrypt';
+import { z } from 'zod';
+import QRCode from 'qrcode';
+import { prisma } from '../lib/prisma';
+import { gerarApiKey } from '../lib/apiKey';
+import { companyPanelAuth } from '../middleware/companyPanelAuth';
+import { asyncHandler } from '../lib/asyncHandler';
+
+const router = Router();
+
+const CATEGORIAS = ['RESTAURANTE', 'CONDOMINIO', 'HOSPITAL', 'HOTEL', 'LOJA', 'OUTROS'] as const;
+const CAMPOS = ['NOME', 'TELEFONE', 'EMAIL', 'CPF', 'RG', 'DATA_NASCIMENTO', 'ENDERECO', 'FOTO'] as const;
+
+const cadastroSchema = z.object({
+  nome: z.string().min(2),
+  cnpj: z.string().min(14).max(18),
+  categoria: z.enum(CATEGORIAS),
+  emailContato: z.string().email(),
+  senha: z.string().min(6),
+});
+
+/**
+ * POST /companies
+ * Cadastro inicial da empresa no painel web (item 3 do roadmap).
+ * Retorna a API Key EM TEXTO PURO uma única vez — a empresa deve guardar
+ * para configurar no ERP. Só o hash fica salvo no banco.
+ */
+router.post(
+  '/',
+  asyncHandler(async (req, res) => {
+    const parsed = cadastroSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+    }
+
+    const { senha, ...dados } = parsed.data;
+
+    const existente = await prisma.company.findFirst({
+      where: { OR: [{ cnpj: dados.cnpj }, { emailContato: dados.emailContato }] },
+    });
+    if (existente) {
+      return res.status(409).json({ error: 'Já existe uma empresa com este CNPJ ou e-mail.' });
+    }
+
+    const senhaHash = await bcrypt.hash(senha, 10);
+    const apiKeyPlaintext = gerarApiKey();
+    const apiKeyHash = await bcrypt.hash(apiKeyPlaintext, 10);
+
+    const company = await prisma.company.create({
+      data: { ...dados, senhaHash, apiKeyHash },
+    });
+
+    return res.status(201).json({
+      id: company.id,
+      nome: company.nome,
+      apiKey: apiKeyPlaintext,
+      aviso: 'Guarde esta API Key com segurança — ela não será mostrada novamente. Configure-a no seu ERP.',
+    });
+  })
+);
+
+const loginSchema = z.object({
+  emailContato: z.string().email(),
+  senha: z.string(),
+});
+
+/**
+ * POST /companies/login
+ * MVP: login do painel web (diferente da API Key usada pelo ERP).
+ * Retorna o companyId a ser usado no header X-COMPANY-ID.
+ */
+router.post(
+  '/login',
+  asyncHandler(async (req, res) => {
+    const parsed = loginSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Dados inválidos.' });
+    }
+
+    const company = await prisma.company.findUnique({ where: { emailContato: parsed.data.emailContato } });
+    if (!company || !(await bcrypt.compare(parsed.data.senha, company.senhaHash))) {
+      return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
+    }
+
+    return res.status(200).json({ companyId: company.id, nome: company.nome });
+  })
+);
+
+/**
+ * GET /companies/me
+ * Dados da própria empresa logada no painel.
+ */
+router.get(
+  '/me',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const company = await prisma.company.findUnique({
+      where: { id: req.panelCompanyId },
+      include: { camposSolicitados: true, unidades: true },
+    });
+    if (!company) return res.status(404).json({ error: 'Empresa não encontrada.' });
+
+    const { senhaHash, apiKeyHash, ...perfil } = company;
+    return res.status(200).json(perfil);
+  })
+);
+
+const camposSchema = z.object({
+  campos: z.array(z.object({ campo: z.enum(CAMPOS), obrigatorio: z.boolean() })).min(1),
+});
+
+/**
+ * PUT /companies/me/campos-solicitados
+ * Empresa escolhe quais dados solicita por padrão.
+ * Ex.: Pizzaria libera [Nome, Telefone, Endereço]; Hospital pede também CPF/RG.
+ */
+router.put(
+  '/me/campos-solicitados',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = camposSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+    }
+
+    const companyId = req.panelCompanyId!;
+
+    await prisma.$transaction([
+      prisma.campoSolicitadoEmpresa.deleteMany({ where: { companyId } }),
+      prisma.campoSolicitadoEmpresa.createMany({
+        data: parsed.data.campos.map((c) => ({ companyId, campo: c.campo, obrigatorio: c.obrigatorio })),
+      }),
+    ]);
+
+    const atualizado = await prisma.campoSolicitadoEmpresa.findMany({ where: { companyId } });
+    return res.status(200).json(atualizado);
+  })
+);
+
+const unidadeSchema = z.object({
+  nome: z.string().min(2),
+  endereco: z.string().optional(),
+});
+
+/**
+ * POST /companies/me/unidades
+ * Cria uma unidade/filial da empresa. Já gera o token único do QR Code
+ * (pré-requisito do item 5 do roadmap: "QR Code funcionando").
+ */
+router.post(
+  '/me/unidades',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = unidadeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+    }
+
+    const unidade = await prisma.unidade.create({
+      data: { ...parsed.data, companyId: req.panelCompanyId! },
+    });
+
+    return res.status(201).json({
+      id: unidade.id,
+      nome: unidade.nome,
+      qrCodeToken: unidade.qrCodeToken,
+      // O app/front do painel usa este token para gerar a imagem do QR Code
+    });
+  })
+);
+
+/**
+ * GET /companies/me/unidades
+ * Lista as unidades da empresa (para exibir os QR Codes no painel).
+ */
+router.get(
+  '/me/unidades',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const unidades = await prisma.unidade.findMany({ where: { companyId: req.panelCompanyId } });
+    return res.status(200).json(unidades);
+  })
+);
+
+/**
+ * Confere que a unidade pedida realmente pertence à empresa logada no painel,
+ * evitando que uma empresa gere o QR Code de uma unidade de outra empresa.
+ */
+async function buscarUnidadeDaEmpresa(unidadeId: string, companyId: string) {
+  const unidade = await prisma.unidade.findUnique({ where: { id: unidadeId } });
+  if (!unidade || unidade.companyId !== companyId) return null;
+  return unidade;
+}
+
+/**
+ * GET /companies/me/unidades/:id/qrcode
+ * Devolve a imagem PNG do QR Code para imprimir/exibir no balcão da unidade.
+ * O conteúdo do QR é o qrCodeToken — o app do usuário lê esse valor e chama
+ * POST /auth/request com { qrCodeToken }.
+ */
+router.get(
+  '/me/unidades/:id/qrcode',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const unidade = await buscarUnidadeDaEmpresa(req.params.id, req.panelCompanyId!);
+    if (!unidade) return res.status(404).json({ error: 'Unidade não encontrada.' });
+
+    const pngBuffer = await QRCode.toBuffer(unidade.qrCodeToken, {
+      type: 'png',
+      width: 400,
+      margin: 2,
+    });
+    res.setHeader('Content-Type', 'image/png');
+    return res.status(200).send(pngBuffer);
+  })
+);
+
+/**
+ * GET /companies/me/unidades/:id/qrcode-base64
+ * Mesma coisa, mas devolve como data URL base64 dentro de um JSON — útil
+ * para um painel web em React embutir a imagem direto num <img src="...">
+ * sem precisar de uma segunda requisição.
+ */
+router.get(
+  '/me/unidades/:id/qrcode-base64',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const unidade = await buscarUnidadeDaEmpresa(req.params.id, req.panelCompanyId!);
+    if (!unidade) return res.status(404).json({ error: 'Unidade não encontrada.' });
+
+    const dataUrl = await QRCode.toDataURL(unidade.qrCodeToken, { width: 400, margin: 2 });
+    return res.status(200).json({ qrCodeDataUrl: dataUrl });
+  })
+);
+
+const webhookSchema = z.object({
+  webhookUrl: z.string().url().nullable(),
+});
+
+/**
+ * PUT /companies/me/webhook
+ * Configura (ou remove, enviando null) a URL que o FIXO PASS chama
+ * automaticamente sempre que um cliente aprova um compartilhamento.
+ * Alternativa ao polling em GET /auth/request/:id.
+ */
+router.put(
+  '/me/webhook',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = webhookSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+    }
+
+    const company = await prisma.company.update({
+      where: { id: req.panelCompanyId },
+      data: { webhookUrl: parsed.data.webhookUrl },
+    });
+
+    return res.status(200).json({ webhookUrl: company.webhookUrl });
+  })
+);
+
+export default router;

@@ -1,0 +1,436 @@
+openapi: 3.0.3
+info:
+  title: FIXO PASS API
+  description: >
+    API de compartilhamento rápido e autorizado de dados entre usuários e empresas.
+    O FIXO PASS não é um documento digital e não substitui RG, CPF, CNH ou os
+    sistemas das empresas — ele apenas entrega, mediante autorização explícita
+    do usuário, os dados que a empresa configurou como necessários.
+  version: 0.1.0
+servers:
+  - url: http://localhost:3000
+    description: Ambiente local de desenvolvimento
+
+components:
+  securitySchemes:
+    CompanyApiKey:
+      type: apiKey
+      in: header
+      name: X-API-KEY
+      description: Chave de API emitida para a empresa/ERP integrado.
+    UserSession:
+      type: apiKey
+      in: header
+      name: X-USER-ID
+      description: MVP — identificador do usuário logado no app (substituir por JWT em produção).
+    CompanyPanelSession:
+      type: apiKey
+      in: header
+      name: X-COMPANY-ID
+      description: MVP — identificador da empresa logada no painel web (diferente da X-API-KEY do ERP).
+
+  schemas:
+    Campo:
+      type: string
+      enum: [NOME, TELEFONE, EMAIL, CPF, RG, DATA_NASCIMENTO, ENDERECO, FOTO]
+
+    AuthRequestInputUserInitiated:
+      type: object
+      required: [metodo]
+      description: Corpo enviado quando quem chama é o APP DO USUÁRIO (autenticado via X-USER-ID), após ler um QR Code ou aproximar o NFC.
+      properties:
+        metodo:
+          type: string
+          enum: [NFC, QRCODE]
+        qrCodeToken:
+          type: string
+          description: Token lido do QR Code (identifica empresa + unidade).
+        companyId:
+          type: string
+          format: uuid
+          description: Id da empresa lido da tag NFC (usar quando não houver qrCodeToken).
+        unidadeId:
+          type: string
+          format: uuid
+
+    AuthRequestInputCompanyInitiated:
+      type: object
+      required: [identificador, metodo]
+      description: Corpo enviado quando quem chama é o ERP/painel da EMPRESA (autenticado via X-API-KEY), ex. terminal de recepção.
+      properties:
+        identificador:
+          type: object
+          properties:
+            cpf:
+              type: string
+            telefone:
+              type: string
+        unidadeId:
+          type: string
+          format: uuid
+        metodo:
+          type: string
+          enum: [NFC, QRCODE]
+        camposPedidos:
+          type: array
+          description: Opcional — se omitido, usa os campos configurados pela empresa em /companies/me/campos-solicitados.
+          items:
+            $ref: '#/components/schemas/Campo'
+
+    AuthRequestOutput:
+      type: object
+      properties:
+        solicitacaoId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [PENDENTE]
+        mensagem:
+          type: string
+
+    ShareInput:
+      type: object
+      required: [solicitacaoId, aprovar]
+      properties:
+        solicitacaoId:
+          type: string
+          format: uuid
+        aprovar:
+          type: boolean
+        camposLiberados:
+          type: array
+          items:
+            $ref: '#/components/schemas/Campo'
+
+    ShareOutput:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [APROVADA, NEGADA]
+        dados:
+          type: object
+          additionalProperties: true
+          example:
+            nome: "Maria Silva"
+            telefone: "+55 19 99999-0000"
+            endereco: "Rua das Flores, 123"
+
+    CustomerDataOutput:
+      type: object
+      properties:
+        dados:
+          type: object
+          additionalProperties: true
+
+    Erro:
+      type: object
+      properties:
+        error:
+          type: string
+
+paths:
+  /users:
+    post:
+      summary: Cadastro inicial do usuário no app
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nomeCompleto, telefone, email, cpf, senha]
+              properties:
+                nomeCompleto: { type: string }
+                telefone: { type: string }
+                email: { type: string, format: email }
+                cpf: { type: string }
+                rg: { type: string }
+                dataNascimento: { type: string, format: date-time }
+                endereco: { type: string }
+                fotoUrl: { type: string, format: uri }
+                senha: { type: string, minLength: 6 }
+      responses:
+        '201': { description: Usuário criado }
+        '400': { description: Dados inválidos }
+        '409': { description: E-mail ou CPF já cadastrado }
+
+  /users/login:
+    post:
+      summary: Login do usuário no app (MVP — retorna userId para header X-USER-ID)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, senha]
+              properties:
+                email: { type: string, format: email }
+                senha: { type: string }
+      responses:
+        '200': { description: Login efetuado }
+        '401': { description: Credenciais inválidas }
+
+  /users/me:
+    get:
+      summary: Dados do usuário logado
+      security: [{ UserSession: [] }]
+      responses:
+        '200': { description: Perfil do usuário }
+    put:
+      summary: Usuário edita seus próprios dados
+      security: [{ UserSession: [] }]
+      responses:
+        '200': { description: Perfil atualizado }
+
+  /users/me/autorizacoes:
+    get:
+      summary: "Tela 'Empresas autorizadas': empresas, dados liberados e data da autorização"
+      security: [{ UserSession: [] }]
+      responses:
+        '200': { description: Lista de autorizações ativas }
+
+  /users/me/autorizacoes/{companyId}:
+    delete:
+      summary: Usuário revoga o acesso de uma empresa
+      security: [{ UserSession: [] }]
+      parameters:
+        - name: companyId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Autorização revogada }
+        '404': { description: Autorização não encontrada }
+
+  /users/me/push-token:
+    put:
+      summary: Salva o Expo Push Token do dispositivo (para avisar o usuário quando o ERP cria uma solicitação)
+      security: [{ UserSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expoPushToken: { type: string, nullable: true }
+      responses:
+        '204': { description: Token salvo }
+        '400': { description: Dados inválidos }
+
+  /companies:
+    post:
+      summary: Cadastro da empresa no painel web (retorna a API Key uma única vez)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nome, cnpj, categoria, emailContato, senha]
+              properties:
+                nome: { type: string }
+                cnpj: { type: string }
+                categoria:
+                  type: string
+                  enum: [RESTAURANTE, CONDOMINIO, HOSPITAL, HOTEL, LOJA, OUTROS]
+                emailContato: { type: string, format: email }
+                senha: { type: string, minLength: 6 }
+      responses:
+        '201': { description: Empresa criada, API Key retornada em texto puro }
+        '409': { description: CNPJ ou e-mail já cadastrado }
+
+  /companies/login:
+    post:
+      summary: Login do painel web da empresa (MVP — retorna companyId para header X-COMPANY-ID)
+      responses:
+        '200': { description: Login efetuado }
+        '401': { description: Credenciais inválidas }
+
+  /companies/me:
+    get:
+      summary: Dados da empresa logada no painel
+      security: [{ CompanyPanelSession: [] }]
+      responses:
+        '200': { description: Perfil da empresa, campos solicitados e unidades }
+
+  /companies/me/campos-solicitados:
+    put:
+      summary: Empresa define quais dados solicita por padrão (ex. pizzaria x hospital)
+      security: [{ CompanyPanelSession: [] }]
+      responses:
+        '200': { description: Configuração de campos atualizada }
+
+  /companies/me/unidades:
+    post:
+      summary: Cria uma unidade/filial (gera o token do QR Code)
+      security: [{ CompanyPanelSession: [] }]
+      responses:
+        '201': { description: Unidade criada com qrCodeToken }
+    get:
+      summary: Lista as unidades da empresa
+      security: [{ CompanyPanelSession: [] }]
+      responses:
+        '200': { description: Lista de unidades }
+
+  /companies/me/unidades/{id}/qrcode:
+    get:
+      summary: Gera a imagem PNG do QR Code da unidade (para imprimir/exibir no balcão)
+      security: [{ CompanyPanelSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Imagem PNG do QR Code
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        '404': { description: Unidade não encontrada }
+
+  /companies/me/unidades/{id}/qrcode-base64:
+    get:
+      summary: Mesmo QR Code, como data URL base64 dentro de um JSON (para embutir em um <img> no painel React)
+      security: [{ CompanyPanelSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Data URL do QR Code
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  qrCodeDataUrl: { type: string }
+        '404': { description: Unidade não encontrada }
+
+  /companies/me/webhook:
+    put:
+      summary: Configura (ou remove) a URL de webhook chamada quando um compartilhamento é aprovado
+      security: [{ CompanyPanelSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                webhookUrl:
+                  type: string
+                  format: uri
+                  nullable: true
+      responses:
+        '200': { description: Webhook configurado }
+
+  /auth/request/{id}:
+    get:
+      summary: Consulta o status de uma solicitação (alternativa ao webhook, para ERPs que fazem polling)
+      security:
+        - CompanyApiKey: []
+        - UserSession: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Status atual da solicitação }
+        '403': { description: Sem permissão para consultar esta solicitação }
+        '404': { description: Solicitação não encontrada }
+
+  /auth/request:
+    post:
+      summary: Cria uma solicitação de compartilhamento (dois fluxos possíveis — ver descrição)
+      description: >
+        Pode ser chamado de duas formas: (1) pelo APP DO USUÁRIO com header
+        X-USER-ID, após ler QR/NFC — usa AuthRequestInputUserInitiated; ou
+        (2) pelo ERP/painel da EMPRESA com header X-API-KEY — usa
+        AuthRequestInputCompanyInitiated.
+      security:
+        - UserSession: []
+        - CompanyApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/AuthRequestInputUserInitiated'
+                - $ref: '#/components/schemas/AuthRequestInputCompanyInitiated'
+      responses:
+        '201':
+          description: Solicitação criada, aguardando aprovação do usuário no app
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthRequestOutput'
+        '400':
+          description: Dados inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Erro'
+        '401':
+          description: Autenticação ausente ou inválida (nem X-USER-ID nem X-API-KEY)
+        '404':
+          description: Usuário, empresa ou QR Code não encontrado
+
+  /customer/share:
+    post:
+      summary: Usuário aprova/nega a solicitação e o FIXO PASS envia os dados autorizados
+      security:
+        - UserSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShareInput'
+      responses:
+        '200':
+          description: Solicitação resolvida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShareOutput'
+        '400':
+          description: Dados inválidos
+        '404':
+          description: Solicitação não encontrada
+        '409':
+          description: Solicitação já havia sido resolvida
+
+  /customer/{id}:
+    get:
+      summary: Empresa consulta os dados já autorizados de um cliente recorrente
+      security:
+        - CompanyApiKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Dados autorizados do cliente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerDataOutput'
+        '401':
+          description: API Key ausente ou inválida
+        '403':
+          description: Nenhuma autorização ativa para este usuário
+        '404':
+          description: Usuário não encontrado

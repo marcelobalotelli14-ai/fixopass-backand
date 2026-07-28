@@ -1,0 +1,179 @@
+// FIXO PASS — Schema do banco de dados (Fase 1)
+// Rodar: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CampoDado {
+  NOME
+  TELEFONE
+  EMAIL
+  CPF
+  RG
+  DATA_NASCIMENTO
+  ENDERECO
+  FOTO
+}
+
+enum CategoriaEmpresa {
+  RESTAURANTE
+  CONDOMINIO
+  HOSPITAL
+  HOTEL
+  LOJA
+  OUTROS
+}
+
+enum StatusSolicitacao {
+  PENDENTE
+  APROVADA
+  NEGADA
+  EXPIRADA
+}
+
+enum MetodoIdentificacao {
+  NFC
+  QRCODE
+  CONSULTA_API
+}
+
+// -----------------------------
+// USUÁRIO (dono dos dados)
+// -----------------------------
+model User {
+  id             String    @id @default(uuid())
+  nomeCompleto   String
+  telefone       String
+  email          String    @unique
+  cpf            String    @unique
+  rg             String?
+  dataNascimento DateTime?
+  endereco       String?
+  fotoUrl        String?
+  expoPushToken  String?
+  senhaHash      String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  autorizacoes Autorizacao[]
+  solicitacoes SolicitacaoCompartilhamento[]
+  logsAcesso   LogAcesso[]
+
+  @@map("users")
+}
+
+// -----------------------------
+// EMPRESA
+// -----------------------------
+model Company {
+  id            String           @id @default(uuid())
+  nome          String
+  cnpj          String           @unique
+  categoria     CategoriaEmpresa
+  emailContato  String           @unique
+  senhaHash     String
+  apiKeyHash    String           @unique
+  webhookUrl    String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  unidades          Unidade[]
+  camposSolicitados CampoSolicitadoEmpresa[]
+  autorizacoes      Autorizacao[]
+  solicitacoes      SolicitacaoCompartilhamento[]
+  logsAcesso        LogAcesso[]
+
+  @@map("companies")
+}
+
+// Unidades da empresa (ex: filiais)
+model Unidade {
+  id          String   @id @default(uuid())
+  companyId   String
+  nome        String
+  endereco    String?
+  qrCodeToken String   @unique @default(uuid())
+  createdAt   DateTime @default(now())
+
+  company      Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  solicitacoes SolicitacaoCompartilhamento[]
+
+  @@map("unidades")
+}
+
+// Quais campos cada empresa solicita por padrão (config do painel da empresa)
+model CampoSolicitadoEmpresa {
+  id          String    @id @default(uuid())
+  companyId   String
+  campo       CampoDado
+  obrigatorio Boolean   @default(false)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, campo])
+  @@map("campos_solicitados_empresa")
+}
+
+// -----------------------------
+// AUTORIZAÇÃO (usuário -> empresa, campos liberados permanentemente)
+// -----------------------------
+model Autorizacao {
+  id              String      @id @default(uuid())
+  userId          String
+  companyId       String
+  camposLiberados CampoDado[]
+  ativo           Boolean     @default(true)
+  dataAutorizacao DateTime    @default(now())
+  dataRevogacao   DateTime?
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, companyId])
+  @@map("autorizacoes")
+}
+
+// -----------------------------
+// SOLICITAÇÃO DE COMPARTILHAMENTO (evento pontual via NFC/QR)
+// -----------------------------
+model SolicitacaoCompartilhamento {
+  id            String              @id @default(uuid())
+  userId        String
+  companyId     String
+  unidadeId     String?
+  metodo        MetodoIdentificacao
+  camposPedidos CampoDado[]
+  status        StatusSolicitacao   @default(PENDENTE)
+  criadaEm      DateTime            @default(now())
+  resolvidaEm   DateTime?
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  unidade Unidade? @relation(fields: [unidadeId], references: [id])
+
+  @@map("solicitacoes_compartilhamento")
+}
+
+// -----------------------------
+// LOG DE ACESSO (histórico/auditoria — obrigatório por segurança)
+// -----------------------------
+model LogAcesso {
+  id             String              @id @default(uuid())
+  userId         String
+  companyId      String
+  camposEnviados CampoDado[]
+  metodo         MetodoIdentificacao
+  ipOrigem       String?
+  timestamp      DateTime            @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("logs_acesso")
+}
