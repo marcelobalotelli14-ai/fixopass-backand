@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { Prisma } from '@prisma/client';
+import multer from 'multer';
+import { TipoArquivoInvalidoError } from '../lib/upload';
 
 /**
  * Middleware de erro global — precisa ser o ÚLTIMO app.use() em index.ts.
@@ -26,6 +28,17 @@ export function errorHandler(err: unknown, req: Request, res: Response, next: Ne
   // o cast e o Prisma propaga como erro de validação.
   if (err instanceof Prisma.PrismaClientValidationError) {
     return res.status(400).json({ error: 'Identificador inválido enviado na requisição.' });
+  }
+
+  // Erros do multer (ex.: arquivo maior que o limite) e do fileFilter de upload.ts.
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'Arquivo muito grande. Tamanho máximo: 5MB.' });
+    }
+    return res.status(400).json({ error: 'Erro ao processar o arquivo enviado.' });
+  }
+  if (err instanceof TipoArquivoInvalidoError) {
+    return res.status(400).json({ error: err.message });
   }
 
   console.error('Erro não tratado:', err);

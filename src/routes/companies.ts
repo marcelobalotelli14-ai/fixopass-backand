@@ -1,11 +1,15 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 import { z } from 'zod';
 import QRCode from 'qrcode';
 import { prisma } from '../lib/prisma';
 import { gerarApiKey } from '../lib/apiKey';
 import { companyPanelAuth } from '../middleware/companyPanelAuth';
 import { asyncHandler } from '../lib/asyncHandler';
+import { uploadLogo } from '../lib/upload';
+import { cloudinary } from '../lib/cloudinary';
+import { enviarEmailRecuperacaoSenha } from '../lib/email';
 
 const router = Router();
 
@@ -103,6 +107,72 @@ router.get(
 
     const { senhaHash, apiKeyHash, ...perfil } = company;
     return res.status(200).json(perfil);
+  })
+);
+
+const atualizarEmpresaSchema = z
+  .object({
+    nome: z.string().min(2).optional(),
+    cnpj: z.string().min(14).max(18).optional(),
+    emailContato: z.string().email().optional(),
+  })
+  .refine((data) => Object.keys(data).length > 0, { message: 'Informe ao menos um campo para atualizar.' });
+
+/**
+ * PUT /companies/me
+ * Empresa edita seus próprios dados cadastrais (nome, CNPJ, e-mail de contato).
+ * Não altera senha nem API Key — isso continua em fluxos dedicados.
+ */
+router.put(
+  '/me',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = atualizarEmpresaSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+    }
+
+    const company = await prisma.company.update({
+      where: { id: req.panelCompanyId },
+      data: parsed.data,
+    });
+
+    const { senhaHash, apiKeyHash, resetPasswordTokenHash, resetPasswordExpiresAt, ...perfil } = company;
+    return res.status(200).json(perfil);
+  })
+);
+
+/**
+ * POST /companies/me/logo
+ * Recebe a imagem da logo (multipart/form-data, campo "logo"), envia para
+ * o Cloudinary e salva a URL pública resultante em logoUrl.
+ */
+router.post(
+  '/me/logo',
+  companyPanelAuth,
+  uploadLogo.single('logo'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Nenhum arquivo enviado. Envie a imagem no campo "logo".' });
+    }
+
+    const resultadoUpload = await new Promise<{ secure_url: string }>((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'fixopass/logos', public_id: req.panelCompanyId, overwrite: true, resource_type: 'image' },
+        (err, result) => {
+          if (err || !result) return reject(err ?? new Error('Falha ao enviar imagem para o Cloudinary.'));
+          resolve(result);
+        }
+      );
+      stream.end(req.file!.buffer);
+    });
+
+    const company = await prisma.company.update({
+      where: { id: req.panelCompanyId },
+      data: { logoUrl: resultadoUpload.secure_url },
+    });
+
+    return res.status(200).json({ logoUrl: company.logoUrl });
   })
 );
 
@@ -259,6 +329,86 @@ router.put(
     });
 
     return res.status(200).json({ webhookUrl: company.webhookUrl });
+  })
+);
+
+const forgotPasswordSchema = z.object({
+  emailContato: z.string().email(),
+});
+
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hora
+
+/**
+ * POST /companies/forgot-password
+ * Inicia o fluxo de "esqueci minha senha" do painel web da empresa.
+ * Sempre responde com a mesma mensagem genérica, exista ou não o e-mail,
+ * para não permitir enumerar e-mails cadastrados por tentativa e erro.
+ */
+router.post(
+  '/forgot-password',
+  asyncHandler(async (req, res) => {
+    const parsed = forgotPasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+    }
+
+    const company = await prisma.company.findUnique({ where: { emailContato: parsed.data.emailContato } });
+
+    if (company) {
+      const tokenPlaintext = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto.createHash('sha256').update(tokenPlaintext).digest('hex');
+
+      await prisma.company.update({
+        where: { id: company.id },
+        data: {
+          resetPasswordTokenHash: tokenHash,
+          resetPasswordExpiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+        },
+      });
+
+      const linkReset = `${process.env.PANEL_URL || 'https://painel.fixopass.com'}/redefinir-senha?token=${tokenPlaintext}`;
+      await enviarEmailRecuperacaoSenha(company.emailContato, linkReset);
+    }
+
+    return res.status(200).json({
+      mensagem: 'Se este e-mail estiver cadastrado, enviaremos instruções para redefinir a senha.',
+    });
+  })
+);
+
+const resetPasswordSchema = z.object({
+  token: z.string().min(1),
+  novaSenha: z.string().min(6),
+});
+
+/**
+ * POST /companies/reset-password
+ * Conclui o fluxo de "esqueci minha senha": troca a senha usando o token
+ * recebido por e-mail em POST /companies/forgot-password.
+ */
+router.post(
+  '/reset-password',
+  asyncHandler(async (req, res) => {
+    const parsed = resetPasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(parsed.data.token).digest('hex');
+    const company = await prisma.company.findUnique({ where: { resetPasswordTokenHash: tokenHash } });
+
+    if (!company || !company.resetPasswordExpiresAt || company.resetPasswordExpiresAt < new Date()) {
+      return res.status(400).json({ error: 'Token inválido ou expirado.' });
+    }
+
+    const senhaHash = await bcrypt.hash(parsed.data.novaSenha, 10);
+
+    await prisma.company.update({
+      where: { id: company.id },
+      data: { senhaHash, resetPasswordTokenHash: null, resetPasswordExpiresAt: null },
+    });
+
+    return res.status(200).json({ mensagem: 'Senha redefinida com sucesso.' });
   })
 );
 

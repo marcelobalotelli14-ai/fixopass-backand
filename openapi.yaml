@@ -250,12 +250,93 @@ paths:
         '200': { description: Login efetuado }
         '401': { description: Credenciais inválidas }
 
+  /companies/forgot-password:
+    post:
+      summary: Inicia o fluxo de "esqueci minha senha" do painel web da empresa
+      description: >
+        Sempre responde 200 com uma mensagem genérica, exista ou não o e-mail,
+        para não permitir enumerar e-mails cadastrados. Se a empresa existir,
+        gera um token de redefinição (válido por 1 hora) e "envia" o link
+        (atualmente apenas logado no servidor — MVP sem provedor de e-mail).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [emailContato]
+              properties:
+                emailContato: { type: string, format: email }
+      responses:
+        '200': { description: Instruções enviadas (se o e-mail existir) }
+        '400': { description: Dados inválidos }
+
+  /companies/reset-password:
+    post:
+      summary: Conclui o fluxo de "esqueci minha senha" trocando a senha com o token recebido
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, novaSenha]
+              properties:
+                token: { type: string }
+                novaSenha: { type: string, minLength: 6 }
+      responses:
+        '200': { description: Senha redefinida com sucesso }
+        '400': { description: Dados inválidos, token inválido ou expirado }
+
   /companies/me:
     get:
       summary: Dados da empresa logada no painel
       security: [{ CompanyPanelSession: [] }]
       responses:
         '200': { description: Perfil da empresa, campos solicitados e unidades }
+    put:
+      summary: Empresa edita seus próprios dados cadastrais (nome, CNPJ, e-mail de contato)
+      security: [{ CompanyPanelSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nome: { type: string }
+                cnpj: { type: string }
+                emailContato: { type: string, format: email }
+      responses:
+        '200': { description: Perfil atualizado }
+        '400': { description: Dados inválidos }
+        '409': { description: CNPJ ou e-mail já usado por outra empresa }
+
+  /companies/me/logo:
+    post:
+      summary: Envia (ou substitui) a logo da empresa e atualiza logoUrl
+      security: [{ CompanyPanelSession: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [logo]
+              properties:
+                logo:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Logo enviada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logoUrl: { type: string, format: uri }
+        '400': { description: Nenhum arquivo enviado ou formato/tamanho inválido }
 
   /companies/me/campos-solicitados:
     put:
