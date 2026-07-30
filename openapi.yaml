@@ -338,6 +338,25 @@ paths:
                   logoUrl: { type: string, format: uri }
         '400': { description: Nenhum arquivo enviado ou formato/tamanho inválido }
 
+  /companies/me/api-key/regenerate:
+    post:
+      summary: Gera uma nova API Key para a empresa, invalidando a anterior imediatamente
+      description: >
+        A API Key nunca é reexibida depois de gerada (só o hash bcrypt é salvo),
+        então esta é a única forma de a empresa obter uma API Key de novo caso
+        tenha perdido a original. O valor em texto puro só aparece nesta resposta.
+      security: [{ CompanyPanelSession: [] }]
+      responses:
+        '200':
+          description: Nova API Key gerada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey: { type: string }
+                  aviso: { type: string }
+
   /companies/me/campos-solicitados:
     put:
       summary: Empresa define quais dados solicita por padrão (ex. pizzaria x hospital)

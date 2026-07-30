@@ -332,6 +332,33 @@ router.put(
   })
 );
 
+/**
+ * POST /companies/me/api-key/regenerate
+ * Gera uma nova API Key e substitui o hash salvo — a key anterior para de
+ * funcionar imediatamente. Não existe forma de recuperar/reexibir uma key
+ * já existente (só o hash bcrypt é persistido), então isso é o único jeito
+ * de a empresa obter uma API Key de novo caso tenha perdido a original.
+ * Devolve a nova key em texto puro UMA vez, mesmo padrão do cadastro.
+ */
+router.post(
+  '/me/api-key/regenerate',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const apiKeyPlaintext = gerarApiKey();
+    const apiKeyHash = await bcrypt.hash(apiKeyPlaintext, 10);
+
+    await prisma.company.update({
+      where: { id: req.panelCompanyId },
+      data: { apiKeyHash },
+    });
+
+    return res.status(200).json({
+      apiKey: apiKeyPlaintext,
+      aviso: 'Guarde esta API Key com segurança — ela não será mostrada novamente. A API Key anterior parou de funcionar.',
+    });
+  })
+);
+
 const forgotPasswordSchema = z.object({
   emailContato: z.string().email(),
 });
