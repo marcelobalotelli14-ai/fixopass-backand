@@ -45,6 +45,15 @@ enum CategoriaPrivacidade {
   GERAL
 }
 
+// Status de assinatura/pagamento da empresa (diferente de `ativa`, que é
+// "a empresa encerrou a própria conta" — ver comentário em Company).
+enum StatusAssinatura {
+  TRIAL
+  ACTIVE
+  EXPIRED
+  BLOCKED
+}
+
 enum StatusSolicitacao {
   PENDENTE
   APROVADA
@@ -148,6 +157,14 @@ model Company {
   // continuam existindo no banco mesmo depois do encerramento.
   ativa                  Boolean          @default(true)
   encerradaEm            DateTime?
+  // Assinatura/pagamento — dimensão INDEPENDENTE de `ativa` (aquilo é "a
+  // empresa fechou a própria conta"; isto é "a mensalidade está em dia").
+  // Ver src/lib/assinatura.ts pra transição automática TRIAL->EXPIRED e
+  // ACTIVE->EXPIRED, e POST /auth/request pra onde isso bloqueia pareamento.
+  status                 StatusAssinatura @default(TRIAL)
+  trialEndsAt            DateTime?
+  nextDueDate            DateTime?
+  precoMensalCentavos    Int?
   createdAt              DateTime         @default(now())
   updatedAt              DateTime         @updatedAt
 

@@ -11,6 +11,7 @@ import { uploadLogo } from '../lib/upload';
 import { cloudinary } from '../lib/cloudinary';
 import { enviarEmailRecuperacaoSenha } from '../lib/email';
 import { montarPayloadDados } from '../lib/dadosCompartilhados';
+import { TRIAL_DIAS, PRECO_PADRAO_CENTAVOS, calcularDaysLeftInTrial, diasEmMs } from '../lib/assinatura';
 
 const router = Router();
 
@@ -52,8 +53,12 @@ router.post(
     const apiKeyPlaintext = gerarApiKey();
     const apiKeyHash = await bcrypt.hash(apiKeyPlaintext, 10);
 
+    // Trial de 15 dias começa na hora do cadastro — status já nasce TRIAL
+    // pelo default do schema, só precisamos gravar até quando ele vale.
+    const trialEndsAt = new Date(Date.now() + diasEmMs(TRIAL_DIAS));
+
     const company = await prisma.company.create({
-      data: { ...dados, senhaHash, apiKeyHash },
+      data: { ...dados, senhaHash, apiKeyHash, trialEndsAt },
     });
 
     return res.status(201).json({
@@ -61,6 +66,9 @@ router.post(
       nome: company.nome,
       apiKey: apiKeyPlaintext,
       aviso: 'Guarde esta API Key com segurança — ela não será mostrada novamente. Configure-a no seu ERP.',
+      status: company.status,
+      trialEndsAt: company.trialEndsAt,
+      daysLeftInTrial: calcularDaysLeftInTrial(company),
     });
   })
 );
@@ -110,7 +118,11 @@ router.get(
     if (!company) return res.status(404).json({ error: 'Empresa não encontrada.' });
 
     const { senhaHash, apiKeyHash, ...perfil } = company;
-    return res.status(200).json(perfil);
+    return res.status(200).json({
+      ...perfil,
+      daysLeftInTrial: calcularDaysLeftInTrial(company),
+      precoMensalCentavos: company.precoMensalCentavos ?? PRECO_PADRAO_CENTAVOS,
+    });
   })
 );
 

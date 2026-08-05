@@ -5,6 +5,7 @@ import { identifyActor } from '../middleware/identifyActor';
 import { dispararPush } from '../lib/pushNotification';
 import { asyncHandler } from '../lib/asyncHandler';
 import { filtrarCamposPorPrivacidade } from '../lib/privacidade';
+import { verificarAssinatura, MENSAGEM_ASSINATURA_VENCIDA } from '../lib/assinatura';
 
 const router = Router();
 
@@ -80,7 +81,7 @@ router.post(
         return res.status(400).json({ error: 'Informe qrCodeToken (QR) ou companyId (NFC).' });
       }
 
-      const company = await prisma.company.findUnique({ where: { id: resolvedCompanyId } });
+      let company = await prisma.company.findUnique({ where: { id: resolvedCompanyId } });
       if (!company || !company.ativa) {
         // Mesma mensagem de "não encontrada" pra QR/NFC de empresa encerrada —
         // não faz sentido diferenciar pro cliente que só está aproximando o
@@ -89,6 +90,15 @@ router.post(
         // barra qualquer leitura assim que a empresa dona delas é encerrada.
         return res.status(404).json({ error: 'QR Code inválido ou expirado.' });
       }
+
+      // Assinatura vencida (trial ou mensalidade) bloqueia o pareamento — mas
+      // com uma mensagem explicativa própria, diferente do "QR Code inválido"
+      // de cima: aqui a empresa existe e está ativa, só não está em dia.
+      const { empresa: companyAtualizada, bloqueado } = await verificarAssinatura(company);
+      if (bloqueado) {
+        return res.status(402).json({ error: MENSAGEM_ASSINATURA_VENCIDA });
+      }
+      company = companyAtualizada;
 
       const camposConfigurados = await buscarCamposConfigurados(resolvedCompanyId);
       // Filtra pelo que o usuário já liberou de antemão pra esse TIPO de
@@ -124,6 +134,15 @@ router.post(
     }
     const { identificador, unidadeId, metodo, camposPedidos } = parsed.data;
     const companyId = actor.id;
+
+    // Mesma checagem de assinatura do fluxo do app — o ERP identificando o
+    // cliente por CPF/telefone também é um pareamento NFC/QR de verdade
+    // (metodo continua sendo NFC ou QRCODE aqui, só quem inicia é a empresa).
+    const companyRow = await prisma.company.findUniqueOrThrow({ where: { id: companyId } });
+    const { bloqueado } = await verificarAssinatura(companyRow);
+    if (bloqueado) {
+      return res.status(402).json({ error: MENSAGEM_ASSINATURA_VENCIDA });
+    }
 
     if (unidadeId) {
       // Mesma checagem do outro fluxo: a unidade tem que ser da própria

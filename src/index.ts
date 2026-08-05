@@ -11,6 +11,8 @@ import authRouter from './routes/auth';
 import customerRouter from './routes/customer';
 import usersRouter from './routes/users';
 import companiesRouter from './routes/companies';
+import webhooksRouter from './routes/webhooks';
+import adminRouter from './routes/admin';
 import { errorHandler } from './middleware/errorHandler';
 
 const app = express();
@@ -29,6 +31,8 @@ app.use('/auth', authRouter);
 app.use('/customer', customerRouter);
 app.use('/users', usersRouter);
 app.use('/companies', companiesRouter);
+app.use('/webhooks', webhooksRouter);
+app.use('/admin', adminRouter);
 
 // Precisa ser o último app.use(): captura qualquer erro repassado por
 // asyncHandler ou por middlewares síncronos, em qualquer rota acima.

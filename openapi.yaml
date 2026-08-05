@@ -28,6 +28,16 @@ components:
       in: header
       name: X-COMPANY-ID
       description: MVP — identificador da empresa logada no painel web (diferente da X-API-KEY do ERP).
+    AdminSecret:
+      type: apiKey
+      in: header
+      name: X-ADMIN-SECRET
+      description: Segredo compartilhado do Super Admin (variável de ambiente ADMIN_SECRET) — acesso a todas as empresas.
+    PaymentWebhookSecret:
+      type: apiKey
+      in: header
+      name: X-WEBHOOK-SECRET
+      description: Segredo compartilhado do webhook de pagamento (variável de ambiente PAYMENT_WEBHOOK_SECRET) — NÃO é verificação de assinatura oficial do gateway, ver comentário em src/routes/webhooks.ts.
 
   schemas:
     Campo:
@@ -330,7 +340,7 @@ paths:
                 emailContato: { type: string, format: email }
                 senha: { type: string, minLength: 6 }
       responses:
-        '201': { description: Empresa criada, API Key retornada em texto puro }
+        '201': { description: "Empresa criada (status=TRIAL, trialEndsAt=agora+15 dias), API Key retornada em texto puro, junto com daysLeftInTrial" }
         '409': { description: CNPJ ou e-mail já cadastrado }
 
   /companies/login:
@@ -380,7 +390,7 @@ paths:
 
   /companies/me:
     get:
-      summary: Dados da empresa logada no painel
+      summary: "Dados da empresa logada no painel, incluindo status de assinatura (status/trialEndsAt/nextDueDate) e daysLeftInTrial calculado"
       security: [{ CompanyPanelSession: [] }]
       responses:
         '200': { description: Perfil da empresa, campos solicitados e unidades }
@@ -584,6 +594,8 @@ paths:
                 $ref: '#/components/schemas/Erro'
         '401':
           description: Autenticação ausente ou inválida (nem X-USER-ID nem X-API-KEY)
+        '402':
+          description: "Assinatura da empresa vencida (TRIAL expirado ou mensalidade em atraso) ou status BLOCKED — pareamento recusado até renovação"
         '404':
           description: Usuário, empresa ou QR Code não encontrado
 
@@ -637,3 +649,84 @@ paths:
           description: Nenhuma autorização ativa para este usuário
         '404':
           description: Usuário não encontrado
+
+  /webhooks/payment:
+    post:
+      summary: Confirmação de pagamento (PIX/cartão) — ativa a empresa e soma 30 dias ao vencimento
+      description: >
+        ATENÇÃO: só confere um segredo compartilhado (X-WEBHOOK-SECRET), NÃO a
+        assinatura oficial do Mercado Pago/Asaas — ver aviso de segurança em
+        src/routes/webhooks.ts antes de conectar um gateway de verdade.
+      security:
+        - PaymentWebhookSecret: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [companyId]
+              properties:
+                companyId: { type: string, format: uuid }
+              additionalProperties: true
+      responses:
+        '200': { description: "Empresa ativada (status=ACTIVE), nextDueDate atualizado" }
+        '400': { description: Payload inválido (companyId ausente/inválido) }
+        '401': { description: Segredo do webhook inválido }
+        '404': { description: Empresa não encontrada }
+        '503': { description: PAYMENT_WEBHOOK_SECRET não configurado no servidor }
+
+  /admin/companies:
+    get:
+      summary: "Super Admin: lista todas as empresas (inclusive encerradas) com status de assinatura, dias de trial e preço"
+      security:
+        - AdminSecret: []
+      responses:
+        '200': { description: Lista completa de empresas }
+        '401': { description: Segredo de admin inválido }
+        '503': { description: ADMIN_SECRET não configurado no servidor }
+
+  /admin/companies/{id}:
+    put:
+      summary: "Super Admin: edita preço mensal customizado, soma/subtrai dias de trial e/ou troca o status manualmente"
+      security:
+        - AdminSecret: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                precoMensalCentavos: { type: integer, nullable: true, description: "null volta a usar o preço padrão" }
+                diasExtras: { type: integer, description: "positivo soma, negativo subtrai, a partir do trialEndsAt atual (ou de agora)" }
+                status: { type: string, enum: [ACTIVE, TRIAL, EXPIRED, BLOCKED] }
+      responses:
+        '200': { description: Empresa atualizada }
+        '400': { description: Nenhum campo informado ou dados inválidos }
+        '404': { description: Empresa não encontrada }
+    delete:
+      summary: "Super Admin: encerra a conta de qualquer empresa (soft delete — mesmo efeito de DELETE /companies/me)"
+      security:
+        - AdminSecret: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Empresa encerrada }
+        '404': { description: Empresa não encontrada }
+
+  /admin/dashboard-stats:
+    get:
+      summary: "Super Admin: métricas globais (total de empresas, ativas, em teste, inadimplentes, faturamento estimado do mês, volume de pareamentos)"
+      security:
+        - AdminSecret: []
+      responses:
+        '200': { description: Métricas agregadas }
