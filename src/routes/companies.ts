@@ -10,6 +10,7 @@ import { asyncHandler } from '../lib/asyncHandler';
 import { uploadLogo } from '../lib/upload';
 import { cloudinary } from '../lib/cloudinary';
 import { enviarEmailRecuperacaoSenha } from '../lib/email';
+import { montarPayloadDados } from '../lib/dadosCompartilhados';
 
 const router = Router();
 
@@ -301,6 +302,38 @@ router.get(
 
     const dataUrl = await QRCode.toDataURL(unidade.qrCodeToken, { width: 400, margin: 2 });
     return res.status(200).json({ qrCodeDataUrl: dataUrl });
+  })
+);
+
+/**
+ * GET /companies/me/compartilhamentos
+ * Histórico de compartilhamentos recebidos pela empresa (LogAcesso), com os
+ * dados atuais do cliente já resolvidos para os campos liberados naquele
+ * evento — inclui a foto do cliente (fotoUrl) sempre que FOTO estiver entre
+ * eles. É a "tela do lojista": o que apareceu quando um cliente aproximou o
+ * NFC ou leu o QR Code. Sem paginação por ora (50 mais recentes) — ok pro
+ * volume de um piloto.
+ */
+router.get(
+  '/me/compartilhamentos',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const logs = await prisma.logAcesso.findMany({
+      where: { companyId: req.panelCompanyId },
+      include: { user: true },
+      orderBy: { timestamp: 'desc' },
+      take: 50,
+    });
+
+    const resposta = logs.map((log) => ({
+      id: log.id,
+      metodo: log.metodo,
+      timestamp: log.timestamp,
+      camposRecebidos: log.camposEnviados,
+      dados: montarPayloadDados(log.user, log.camposEnviados),
+    }));
+
+    return res.status(200).json(resposta);
   })
 );
 

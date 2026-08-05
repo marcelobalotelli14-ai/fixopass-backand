@@ -13,6 +13,7 @@ Cobre os itens **1 (banco), 2 (cadastro usuário), 3 (cadastro empresa), 4 (perm
   - `POST /users/login` — login MVP (retorna `userId` para usar no header `X-USER-ID`).
   - `GET /users/me` / `PUT /users/me` — ver e editar o próprio perfil.
   - `DELETE /users/me` — exclusão definitiva da própria conta (LGPD); remove em cascata autorizações, solicitações e logs de acesso.
+  - `POST /users/me/foto` — envia (ou substitui) a foto de perfil, mesmo padrão de upload de `POST /companies/me/logo`.
   - `GET /users/me/autorizacoes` — tela "Empresas autorizadas" (empresa, dados liberados, data).
   - `DELETE /users/me/autorizacoes/:companyId` — revogar acesso de uma empresa (sem apagar a conta).
   - `PUT /users/me/push-token` — salva o Expo Push Token do dispositivo, usado para avisar o usuário quando o ERP cria uma solicitação sem ele estar com o app aberto.
@@ -25,6 +26,7 @@ Cobre os itens **1 (banco), 2 (cadastro usuário), 3 (cadastro empresa), 4 (perm
   - `POST /companies/me/unidades` / `GET /companies/me/unidades` — cria/lista unidades, já gerando o `qrCodeToken` de cada uma.
   - `GET /companies/me/unidades/:id/qrcode` — imagem PNG do QR Code, pronta para imprimir/exibir no balcão.
   - `GET /companies/me/unidades/:id/qrcode-base64` — o mesmo QR, como data URL base64 dentro de JSON (para um painel em React embutir direto num `<img src="...">`).
+  - `GET /companies/me/compartilhamentos` — histórico de compartilhamentos recebidos (LogAcesso) com os dados atuais do cliente já resolvidos pros campos liberados em cada evento, foto incluída quando FOTO estiver entre eles. É a "tela do lojista" mostrando o que apareceu ao aproximar o NFC ou ler o QR Code.
   - `PUT /companies/me/webhook` — configura a URL que recebe os dados automaticamente quando um cliente aprova (item 8: integração ERP piloto).
 
 - **Entrega dos dados pro ERP** (item 8 do roadmap):

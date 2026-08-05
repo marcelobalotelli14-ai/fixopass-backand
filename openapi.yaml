@@ -191,6 +191,25 @@ paths:
         '204': { description: Conta excluída }
         '401': { description: Usuário não autenticado ou não encontrado }
 
+  /users/me/foto:
+    post:
+      summary: Envia (ou substitui) a foto de perfil do usuário e atualiza fotoUrl
+      security: [{ UserSession: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [foto]
+              properties:
+                foto:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Foto enviada
+
   /users/me/autorizacoes:
     get:
       summary: "Tela 'Empresas autorizadas': empresas, dados liberados e data da autorização"
@@ -418,6 +437,14 @@ paths:
                 properties:
                   qrCodeDataUrl: { type: string }
         '404': { description: Unidade não encontrada }
+
+  /companies/me/compartilhamentos:
+    get:
+      summary: Histórico de compartilhamentos recebidos (LogAcesso) com os dados atuais do cliente já resolvidos, incluindo foto quando liberada
+      security: [{ CompanyPanelSession: [] }]
+      responses:
+        '200':
+          description: Até 50 compartilhamentos mais recentes
 
   /companies/me/webhook:
     put:

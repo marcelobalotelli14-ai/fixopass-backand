@@ -20,3 +20,7 @@ export const uploadLogo = multer({
     cb(null, true);
   },
 });
+
+// Mesma config de uploadLogo (tamanho/tipos aceitos) — só um nome mais claro
+// pro caso de uso em POST /users/me/foto (foto de perfil do usuário comum).
+export const uploadFoto = uploadLogo;

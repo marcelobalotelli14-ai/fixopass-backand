@@ -5,6 +5,7 @@ import { companyAuth } from '../middleware/companyAuth';
 import { userAuth } from '../middleware/userAuth';
 import { dispararWebhook } from '../lib/webhook';
 import { asyncHandler } from '../lib/asyncHandler';
+import { montarPayloadDados } from '../lib/dadosCompartilhados';
 
 const router = Router();
 
@@ -148,30 +149,5 @@ router.get(
     return res.status(200).json({ dados });
   })
 );
-
-/**
- * Monta o payload de dados contendo SOMENTE os campos autorizados,
- * conforme o exemplo da especificação:
- * { nome: "", telefone: "", endereco: "", cpf: "" }
- */
-function montarPayloadDados(user: any, campos: string[]) {
-  const map: Record<string, unknown> = {
-    NOME: user.nomeCompleto,
-    TELEFONE: user.telefone,
-    EMAIL: user.email,
-    CPF: user.cpf,
-    RG: user.rg,
-    DATA_NASCIMENTO: user.dataNascimento,
-    ENDERECO: user.endereco,
-    FOTO: user.fotoUrl,
-  };
-
-  const payload: Record<string, unknown> = {};
-  for (const campo of campos) {
-    const chave = campo.toLowerCase();
-    payload[chave] = map[campo];
-  }
-  return payload;
-}
 
 export default router;

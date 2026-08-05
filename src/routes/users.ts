@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { userAuth } from '../middleware/userAuth';
 import { asyncHandler } from '../lib/asyncHandler';
+import { uploadFoto } from '../lib/upload';
+import { cloudinary } from '../lib/cloudinary';
 
 const router = Router();
 
@@ -146,6 +148,43 @@ router.delete(
   asyncHandler(async (req, res) => {
     await prisma.user.delete({ where: { id: req.userId } });
     return res.status(204).send();
+  })
+);
+
+/**
+ * POST /users/me/foto
+ * Recebe a foto de perfil (multipart/form-data, campo "foto"), envia pro
+ * Cloudinary e salva a URL pública resultante em fotoUrl — mesmo padrão de
+ * POST /companies/me/logo. Essa é a foto que aparece pra empresa quando o
+ * campo FOTO estiver entre os liberados num compartilhamento
+ * (ver montarPayloadDados em lib/dadosCompartilhados.ts).
+ */
+router.post(
+  '/me/foto',
+  userAuth,
+  uploadFoto.single('foto'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Nenhum arquivo enviado. Envie a imagem no campo "foto".' });
+    }
+
+    const resultadoUpload = await new Promise<{ secure_url: string }>((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'fixopass/fotos-usuarios', public_id: req.userId, overwrite: true, resource_type: 'image' },
+        (err, result) => {
+          if (err || !result) return reject(err ?? new Error('Falha ao enviar imagem para o Cloudinary.'));
+          resolve(result);
+        }
+      );
+      stream.end(req.file!.buffer);
+    });
+
+    const user = await prisma.user.update({
+      where: { id: req.userId },
+      data: { fotoUrl: resultadoUpload.secure_url },
+    });
+
+    return res.status(200).json({ fotoUrl: user.fotoUrl });
   })
 );
 
