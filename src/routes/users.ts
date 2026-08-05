@@ -244,6 +244,9 @@ router.get(
     });
 
     const resposta = autorizacoes.map((a) => ({
+      // companyId precisa ir junto — é o que a tela usa pra saber qual
+      // empresa revogar em DELETE /users/me/autorizacoes/:companyId.
+      companyId: a.companyId,
       empresa: a.company.nome,
       categoria: a.company.categoria,
       dadosLiberados: a.camposLiberados,
