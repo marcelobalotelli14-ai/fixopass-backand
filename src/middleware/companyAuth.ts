@@ -28,7 +28,11 @@ export async function companyAuth(req: Request, res: Response, next: NextFunctio
   }
 
   try {
+    // Só considera empresas ativas — uma API Key de uma conta encerrada
+    // (DELETE /companies/me) precisa parar de autenticar imediatamente,
+    // mesmo que o hash ainda esteja no banco (não apagamos o registro).
     const companies = await prisma.company.findMany({
+      where: { ativa: true },
       select: { id: true, nome: true, apiKeyHash: true },
     });
 

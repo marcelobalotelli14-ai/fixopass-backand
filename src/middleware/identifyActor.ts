@@ -45,7 +45,11 @@ export async function identifyActor(req: Request, res: Response, next: NextFunct
     }
 
     if (apiKey) {
-      const companies = await prisma.company.findMany({ select: { id: true, nome: true, apiKeyHash: true } });
+      // Só considera empresas ativas — mesma lógica de companyAuth.ts.
+      const companies = await prisma.company.findMany({
+        where: { ativa: true },
+        select: { id: true, nome: true, apiKeyHash: true },
+      });
       const encontrada = (
         await Promise.all(companies.map(async (c) => ({ match: await bcrypt.compare(apiKey, c.apiKeyHash), c })))
       ).find((e) => e.match)?.c;

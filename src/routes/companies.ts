@@ -87,6 +87,9 @@ router.post(
     if (!company || !(await bcrypt.compare(parsed.data.senha, company.senhaHash))) {
       return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
     }
+    if (!company.ativa) {
+      return res.status(401).json({ error: 'Esta conta foi encerrada.' });
+    }
 
     return res.status(200).json({ companyId: company.id, nome: company.nome });
   })
@@ -140,6 +143,41 @@ router.put(
 
     const { senhaHash, apiKeyHash, resetPasswordTokenHash, resetPasswordExpiresAt, ...perfil } = company;
     return res.status(200).json(perfil);
+  })
+);
+
+/**
+ * DELETE /companies/me
+ * Encerramento da conta da empresa — SOFT DELETE, ao contrário de
+ * DELETE /users/me (que é exclusão definitiva/LGPD). Aqui só marcamos
+ * `ativa = false`:
+ *
+ * - Revoga a API Key e a sessão do painel "na prática": companyAuth,
+ *   companyPanelAuth e identifyActor só consideram empresas com `ativa: true`,
+ *   então qualquer requisição usando o X-API-KEY ou X-COMPANY-ID antigos passa
+ *   a ser rejeitada a partir daqui — sem precisar invalidar hash nem gerenciar
+ *   lista de sessões.
+ * - Desativa as tags NFC/QR Code das unidades: POST /auth/request rejeita
+ *   qualquer leitura cujo qrCodeToken/companyId resolva pra uma empresa
+ *   inativa (mesma mensagem de "QR Code inválido", pra não vazar que a
+ *   empresa existiu).
+ * - Bloqueia login futuro no painel (POST /companies/login checa `ativa`).
+ * - NÃO apaga nada: unidades, campos solicitados, autorizações, solicitações
+ *   e — o mais importante — os logs de auditoria (LogAcesso) continuam no
+ *   banco intactos. Diferente do usuário comum, o encerramento de uma conta
+ *   de empresa não é "direito ao esquecimento" — é desligar o acesso mantendo
+ *   o histórico de auditoria de compartilhamentos já realizados.
+ */
+router.delete(
+  '/me',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    await prisma.company.update({
+      where: { id: req.panelCompanyId },
+      data: { ativa: false, encerradaEm: new Date() },
+    });
+
+    return res.status(204).send();
   })
 );
 

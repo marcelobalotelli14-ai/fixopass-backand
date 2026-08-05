@@ -80,8 +80,13 @@ router.post(
       }
 
       const company = await prisma.company.findUnique({ where: { id: resolvedCompanyId } });
-      if (!company) {
-        return res.status(404).json({ error: 'Empresa não encontrada.' });
+      if (!company || !company.ativa) {
+        // Mesma mensagem de "não encontrada" pra QR/NFC de empresa encerrada —
+        // não faz sentido diferenciar pro cliente que só está aproximando o
+        // celular. É assim que "desativar as tags NFC/QR Code" se traduz na
+        // prática: sem precisar mexer em cada Unidade, a checagem aqui já
+        // barra qualquer leitura assim que a empresa dona delas é encerrada.
+        return res.status(404).json({ error: 'QR Code inválido ou expirado.' });
       }
 
       const camposPedidos = await buscarCamposConfigurados(resolvedCompanyId);

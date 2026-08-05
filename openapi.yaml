@@ -336,6 +336,11 @@ paths:
         '200': { description: Perfil atualizado }
         '400': { description: Dados inválidos }
         '409': { description: CNPJ ou e-mail já usado por outra empresa }
+    delete:
+      summary: Encerra a conta da empresa (soft delete — ativa=false; revoga API Key/sessão do painel, desativa NFC/QR Code das unidades, preserva logs de auditoria)
+      security: [{ CompanyPanelSession: [] }]
+      responses:
+        '204': { description: Conta encerrada }
 
   /companies/me/logo:
     post:

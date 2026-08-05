@@ -83,6 +83,13 @@ model Company {
   logoUrl                 String?
   resetPasswordTokenHash  String?          @unique
   resetPasswordExpiresAt  DateTime?
+  // Encerramento de conta (DELETE /companies/me) é SOFT DELETE — ao contrário do
+  // usuário comum (que tem exclusão definitiva/LGPD via DELETE /users/me), a
+  // empresa é só marcada como inativa. Isso preserva os logs de auditoria
+  // (LogAcesso) e o histórico de autorizações/solicitações ligados a ela, que
+  // continuam existindo no banco mesmo depois do encerramento.
+  ativa                   Boolean          @default(true)
+  encerradaEm             DateTime?
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
 

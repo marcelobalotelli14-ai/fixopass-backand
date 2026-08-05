@@ -21,7 +21,8 @@ Cobre os itens **1 (banco), 2 (cadastro usuário), 3 (cadastro empresa), 4 (perm
 - **Cadastro e configuração de empresa** — item 3:
   - `POST /companies` — cadastro no painel, retorna a **API Key em texto puro uma única vez** (para configurar no ERP).
   - `POST /companies/login` — login do painel (retorna `companyId` para `X-COMPANY-ID`; **diferente** da API Key do ERP).
-  - `GET /companies/me` — dados da empresa, campos solicitados e unidades.
+  - `GET /companies/me` / `PUT /companies/me` — ver e editar os dados cadastrais da empresa.
+  - `DELETE /companies/me` — encerra a conta (**soft delete**: `ativa = false`). Diferente de `DELETE /users/me` (exclusão definitiva/LGPD), aqui nada é apagado — API Key e sessão do painel param de autenticar, as tags NFC/QR Code das unidades param de funcionar, login futuro é bloqueado, mas unidades/autorizações/solicitações e principalmente os logs de auditoria (`LogAcesso`) continuam no banco.
   - `PUT /companies/me/campos-solicitados` — configura quais dados a empresa pede (ex.: pizzaria x hospital).
   - `POST /companies/me/unidades` / `GET /companies/me/unidades` — cria/lista unidades, já gerando o `qrCodeToken` de cada uma.
   - `GET /companies/me/unidades/:id/qrcode` — imagem PNG do QR Code, pronta para imprimir/exibir no balcão.

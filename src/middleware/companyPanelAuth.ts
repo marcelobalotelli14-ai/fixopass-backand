@@ -26,9 +26,14 @@ export async function companyPanelAuth(req: Request, res: Response, next: NextFu
   }
 
   try {
-    const existe = await prisma.company.findUnique({ where: { id: companyId }, select: { id: true } });
+    const existe = await prisma.company.findUnique({ where: { id: companyId }, select: { id: true, ativa: true } });
     if (!existe) {
       return res.status(401).json({ error: 'Empresa não encontrada.' });
+    }
+    // Conta encerrada (DELETE /companies/me) — "encerra sessões ativas": qualquer
+    // requisição usando o X-COMPANY-ID antigo para de funcionar a partir daqui.
+    if (!existe.ativa) {
+      return res.status(401).json({ error: 'Esta conta foi encerrada.' });
     }
 
     req.panelCompanyId = companyId;
