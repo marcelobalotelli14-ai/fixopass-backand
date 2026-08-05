@@ -251,6 +251,8 @@ router.get(
       categoria: a.company.categoria,
       dadosLiberados: a.camposLiberados,
       dataAutorizacao: a.dataAutorizacao,
+      accessCount: a.accessCount,
+      lastAccessedAt: a.lastAccessedAt,
     }));
 
     return res.status(200).json(resposta);

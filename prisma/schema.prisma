@@ -199,6 +199,14 @@ model Autorizacao {
   ativo           Boolean     @default(true)
   dataAutorizacao DateTime    @default(now())
   dataRevogacao   DateTime?
+  // Contador de pareamentos: incrementado a cada POST /customer/share
+  // aprovado (usuário lendo o QR/NFC dessa empresa de novo), não em
+  // GET /customer/:id (isso é consulta direta do ERP, não um evento de
+  // NFC/QR de verdade — mesmo critério que já separa os métodos em
+  // LogAcesso). accessCount começa em 1 (a própria criação já é o
+  // primeiro pareamento) e lastAccessedAt acompanha.
+  accessCount     Int         @default(1)
+  lastAccessedAt  DateTime    @default(now())
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)

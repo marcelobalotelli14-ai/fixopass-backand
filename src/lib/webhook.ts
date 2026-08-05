@@ -13,6 +13,8 @@ export async function dispararWebhook(
     userId: string;
     companyId: string;
     dados: Record<string, unknown>;
+    accessCount: number;
+    lastAccessedAt: Date;
   }
 ) {
   try {

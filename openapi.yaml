@@ -116,6 +116,13 @@ components:
             nome: "Maria Silva"
             telefone: "+55 19 99999-0000"
             endereco: "Rua das Flores, 123"
+        accessCount:
+          type: integer
+          description: "Nº de pareamentos aprovados do usuário com essa empresa (inclui este). Ausente quando status=NEGADA."
+        lastAccessedAt:
+          type: string
+          format: date-time
+          description: "Ausente quando status=NEGADA."
 
     CustomerDataOutput:
       type: object
@@ -123,6 +130,12 @@ components:
         dados:
           type: object
           additionalProperties: true
+        accessCount:
+          type: integer
+          description: Nº de pareamentos aprovados desse usuário com essa empresa
+        lastAccessedAt:
+          type: string
+          format: date-time
 
     Erro:
       type: object
@@ -264,7 +277,7 @@ paths:
 
   /users/me/autorizacoes:
     get:
-      summary: "Tela 'Empresas autorizadas': empresas, dados liberados e data da autorização"
+      summary: "Tela 'Empresas autorizadas': empresas, dados liberados, data da autorização e contador de pareamentos (accessCount/lastAccessedAt)"
       security: [{ UserSession: [] }]
       responses:
         '200': { description: Lista de autorizações ativas }
@@ -497,7 +510,7 @@ paths:
 
   /companies/me/compartilhamentos:
     get:
-      summary: Histórico de compartilhamentos recebidos (LogAcesso) com os dados atuais do cliente já resolvidos, incluindo foto quando liberada
+      summary: Histórico de compartilhamentos recebidos (LogAcesso) com os dados atuais do cliente já resolvidos (foto incluída) e o contador de pareamentos (accessCount/lastAccessedAt) de cada cliente com essa empresa
       security: [{ CompanyPanelSession: [] }]
       responses:
         '200':

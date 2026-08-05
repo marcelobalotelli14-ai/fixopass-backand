@@ -16,7 +16,7 @@ Cobre os itens **1 (banco), 2 (cadastro usuário), 3 (cadastro empresa), 4 (perm
   - `PUT /users/me/senha` — troca de senha exigindo a senha atual (diferente do fluxo de "esqueci a senha" por e-mail).
   - `POST /users/me/foto` — envia (ou substitui) a foto de perfil, mesmo padrão de upload de `POST /companies/me/logo`.
   - `GET /users/me/privacidade` / `PUT /users/me/privacidade` — controle de compartilhamento **por categoria de estabelecimento** (Restaurante, Condomínio, Hospital, Hotel, Loja, Outros, Geral): liga/desliga foto, nome, cpf, rg, dataNascimento, telefone e endereco por categoria. `email` fica de fora desse controle de propósito — continua regulado só pelo que a empresa pede + aprovação pontual. Aplicado em `POST /auth/request`: os `camposPedidos` da empresa passam por esse filtro (regra da categoria dela, senão a regra `GERAL`, senão sem filtro extra) antes da pessoa nem ver a tela de aprovação — nos dois fluxos (app do usuário lendo QR/NFC, ou ERP identificando por CPF/telefone).
-  - `GET /users/me/autorizacoes` — tela "Empresas autorizadas" (companyId, empresa, dados liberados, data). `companyId` vai junto pra tela conseguir montar o botão de revogar sem precisar de outra chamada.
+  - `GET /users/me/autorizacoes` — tela "Empresas autorizadas" (companyId, empresa, dados liberados, data, `accessCount`/`lastAccessedAt` — contador de pareamentos). `companyId` vai junto pra tela conseguir montar o botão de revogar sem precisar de outra chamada.
   - `DELETE /users/me/autorizacoes/:companyId` — revogar acesso de uma empresa (sem apagar a conta).
   - `PUT /users/me/push-token` — salva o Expo Push Token do dispositivo, usado para avisar o usuário quando o ERP cria uma solicitação sem ele estar com o app aberto.
 
@@ -29,7 +29,9 @@ Cobre os itens **1 (banco), 2 (cadastro usuário), 3 (cadastro empresa), 4 (perm
   - `POST /companies/me/unidades` / `GET /companies/me/unidades` — cria/lista unidades, já gerando o `qrCodeToken` de cada uma.
   - `GET /companies/me/unidades/:id/qrcode` — imagem PNG do QR Code, pronta para imprimir/exibir no balcão.
   - `GET /companies/me/unidades/:id/qrcode-base64` — o mesmo QR, como data URL base64 dentro de JSON (para um painel em React embutir direto num `<img src="...">`).
-  - `GET /companies/me/compartilhamentos` — histórico de compartilhamentos recebidos (LogAcesso) com os dados atuais do cliente já resolvidos pros campos liberados em cada evento, foto incluída quando FOTO estiver entre eles. É a "tela do lojista" mostrando o que apareceu ao aproximar o NFC ou ler o QR Code.
+  - `GET /companies/me/compartilhamentos` — histórico de compartilhamentos recebidos (LogAcesso) com os dados atuais do cliente já resolvidos pros campos liberados em cada evento, foto incluída quando FOTO estiver entre eles, e o contador de pareamentos (`accessCount`/`lastAccessedAt`) daquele cliente com a empresa. É a "tela do lojista" mostrando o que apareceu ao aproximar o NFC ou ler o QR Code.
+
+- **Contador de pareamentos** — `Autorizacao.accessCount`/`lastAccessedAt`, incrementado a cada `POST /customer/share` aprovado (cliente lendo o QR/NFC de novo). *Não* incrementa em `GET /customer/:id` — isso é consulta direta do ERP pra um cliente já autorizado, não um evento de NFC/QR de verdade (mesmo critério que já separava os métodos em `LogAcesso`). Devolvido em `GET /users/me/autorizacoes`, na resposta de `POST /customer/share`, em `GET /customer/:id` e no payload do webhook.
   - `PUT /companies/me/webhook` — configura a URL que recebe os dados automaticamente quando um cliente aprova (item 8: integração ERP piloto).
 
 - **Entrega dos dados pro ERP** (item 8 do roadmap):

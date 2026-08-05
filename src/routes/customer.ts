@@ -62,10 +62,20 @@ router.post(
     const camposValidos = (camposLiberados ?? []).filter((c) => pedidos.has(c));
     const campos = camposValidos.length > 0 ? camposValidos : solicitacao.camposPedidos;
 
-    // Grava/atualiza a autorização permanente do usuário para essa empresa
-    await prisma.autorizacao.upsert({
+    // Grava/atualiza a autorização permanente do usuário para essa empresa.
+    // Cada aprovação é um "pareamento" — se a autorização já existia (cliente
+    // recorrente), incrementa accessCount; se é a primeira vez, o default do
+    // schema (1) já cobre esse primeiro pareamento.
+    const autorizacaoAtualizada = await prisma.autorizacao.upsert({
       where: { userId_companyId: { userId, companyId: solicitacao.companyId } },
-      update: { camposLiberados: campos, ativo: true, dataAutorizacao: new Date(), dataRevogacao: null },
+      update: {
+        camposLiberados: campos,
+        ativo: true,
+        dataAutorizacao: new Date(),
+        dataRevogacao: null,
+        accessCount: { increment: 1 },
+        lastAccessedAt: new Date(),
+      },
       create: {
         userId,
         companyId: solicitacao.companyId,
@@ -99,10 +109,17 @@ router.post(
         userId,
         companyId: solicitacao.companyId,
         dados: dadosLiberados,
+        accessCount: autorizacaoAtualizada.accessCount,
+        lastAccessedAt: autorizacaoAtualizada.lastAccessedAt,
       });
     }
 
-    return res.status(200).json({ status: 'APROVADA', dados: dadosLiberados });
+    return res.status(200).json({
+      status: 'APROVADA',
+      dados: dadosLiberados,
+      accessCount: autorizacaoAtualizada.accessCount,
+      lastAccessedAt: autorizacaoAtualizada.lastAccessedAt,
+    });
   })
 );
 
@@ -146,7 +163,11 @@ router.get(
       },
     });
 
-    return res.status(200).json({ dados });
+    return res.status(200).json({
+      dados,
+      accessCount: autorizacao.accessCount,
+      lastAccessedAt: autorizacao.lastAccessedAt,
+    });
   })
 );
 

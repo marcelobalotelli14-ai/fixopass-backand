@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "autorizacoes" ADD COLUMN     "accessCount" INTEGER NOT NULL DEFAULT 1,
+ADD COLUMN     "lastAccessedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;

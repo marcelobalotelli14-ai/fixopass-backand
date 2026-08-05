@@ -363,13 +363,26 @@ router.get(
       take: 50,
     });
 
-    const resposta = logs.map((log) => ({
-      id: log.id,
-      metodo: log.metodo,
-      timestamp: log.timestamp,
-      camposRecebidos: log.camposEnviados,
-      dados: montarPayloadDados(log.user, log.camposEnviados),
-    }));
+    // Pareamentos (accessCount/lastAccessedAt) de quem aparece nos logs —
+    // uma query só pra todo mundo, não uma por linha.
+    const autorizacoes = await prisma.autorizacao.findMany({
+      where: { companyId: req.panelCompanyId, userId: { in: [...new Set(logs.map((l) => l.userId))] } },
+      select: { userId: true, accessCount: true, lastAccessedAt: true },
+    });
+    const pareamentoPorUsuario = new Map(autorizacoes.map((a) => [a.userId, a]));
+
+    const resposta = logs.map((log) => {
+      const pareamento = pareamentoPorUsuario.get(log.userId);
+      return {
+        id: log.id,
+        metodo: log.metodo,
+        timestamp: log.timestamp,
+        camposRecebidos: log.camposEnviados,
+        dados: montarPayloadDados(log.user, log.camposEnviados),
+        accessCount: pareamento?.accessCount ?? null,
+        lastAccessedAt: pareamento?.lastAccessedAt ?? null,
+      };
+    });
 
     return res.status(200).json(resposta);
   })
