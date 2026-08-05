@@ -191,6 +191,58 @@ paths:
         '204': { description: Conta excluída }
         '401': { description: Usuário não autenticado ou não encontrado }
 
+  /users/me/senha:
+    put:
+      summary: Troca de senha do usuário logado (exige a senha atual)
+      security: [{ UserSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [senhaAtual, novaSenha]
+              properties:
+                senhaAtual: { type: string }
+                novaSenha: { type: string, minLength: 6 }
+      responses:
+        '204': { description: Senha alterada }
+        '401': { description: Senha atual incorreta }
+
+  /users/me/privacidade:
+    get:
+      summary: Preferências de compartilhamento por categoria de estabelecimento (foto/nome/cpf/rg/dataNascimento/telefone/endereco)
+      security: [{ UserSession: [] }]
+      responses:
+        '200': { description: As 7 categorias (RESTAURANTE..OUTROS + GERAL), com `existe:false` nas ainda não configuradas }
+    put:
+      summary: Salva (upsert) as regras de privacidade de uma ou mais categorias
+      security: [{ UserSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [categorias]
+              properties:
+                categorias:
+                  type: array
+                  items:
+                    type: object
+                    required: [categoria, foto, nome, cpf, rg, dataNascimento, telefone, endereco]
+                    properties:
+                      categoria: { type: string, enum: [RESTAURANTE, CONDOMINIO, HOSPITAL, HOTEL, LOJA, OUTROS, GERAL] }
+                      foto: { type: boolean }
+                      nome: { type: boolean }
+                      cpf: { type: boolean }
+                      rg: { type: boolean }
+                      dataNascimento: { type: boolean }
+                      telefone: { type: boolean }
+                      endereco: { type: boolean }
+      responses:
+        '200': { description: Regras salvas }
+
   /users/me/foto:
     post:
       summary: Envia (ou substitui) a foto de perfil do usuário e atualiza fotoUrl

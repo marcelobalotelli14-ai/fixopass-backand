@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma';
 
 export type Actor =
   | { type: 'user'; id: string }
-  | { type: 'company'; id: string; nome: string };
+  | { type: 'company'; id: string; nome: string; categoria: string };
 
 declare global {
   namespace Express {
@@ -48,7 +48,7 @@ export async function identifyActor(req: Request, res: Response, next: NextFunct
       // Só considera empresas ativas — mesma lógica de companyAuth.ts.
       const companies = await prisma.company.findMany({
         where: { ativa: true },
-        select: { id: true, nome: true, apiKeyHash: true },
+        select: { id: true, nome: true, categoria: true, apiKeyHash: true },
       });
       const encontrada = (
         await Promise.all(companies.map(async (c) => ({ match: await bcrypt.compare(apiKey, c.apiKeyHash), c })))
@@ -58,7 +58,7 @@ export async function identifyActor(req: Request, res: Response, next: NextFunct
         return res.status(401).json({ error: 'API Key inválida.' });
       }
 
-      req.actor = { type: 'company', id: encontrada.id, nome: encontrada.nome };
+      req.actor = { type: 'company', id: encontrada.id, nome: encontrada.nome, categoria: encontrada.categoria };
       return next();
     }
 

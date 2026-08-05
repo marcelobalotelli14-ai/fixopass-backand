@@ -5,6 +5,7 @@ generator client {
   provider      = "prisma-client-js"
   binaryTargets = ["native", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
 }
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -30,6 +31,20 @@ enum CategoriaEmpresa {
   OUTROS
 }
 
+// Mesmos valores de CategoriaEmpresa + GERAL (regra "padrão" usada quando o
+// usuário não configurou nada específico pra categoria da empresa que está
+// pedindo acesso). É um enum separado — CategoriaEmpresa continua só com
+// categorias de empresa de verdade, sem GERAL poluindo o cadastro de empresa.
+enum CategoriaPrivacidade {
+  RESTAURANTE
+  CONDOMINIO
+  HOSPITAL
+  HOTEL
+  LOJA
+  OUTROS
+  GERAL
+}
+
 enum StatusSolicitacao {
   PENDENTE
   APROVADA
@@ -47,51 +62,94 @@ enum MetodoIdentificacao {
 // USUÁRIO (dono dos dados)
 // -----------------------------
 model User {
-  id             String    @id @default(uuid())
-  nomeCompleto   String
-  telefone       String
-  email          String    @unique
-  cpf            String    @unique
-  rg             String?
-  dataNascimento DateTime?
-  endereco       String?
-  fotoUrl        String?
-  expoPushToken  String?
-  senhaHash      String
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id                  String    @id @default(uuid())
+  nomeCompleto        String
+  telefone            String
+  email               String    @unique
+  cpf                 String    @unique
+  rg                  String?
+  dataNascimento      DateTime?
+  // `endereco` continua sendo o endereço em texto livre — é o que o
+  // mobile-app (CadastroScreen.tsx) já envia e o que POST /users sempre
+  // aceitou, então não pode ser removido/renomeado sem quebrar esse cliente.
+  // Os campos abaixo são NOVOS e opcionais: quando o usuário preenche o
+  // endereço estruturado pela web (Meus dados), eles ficam disponíveis além
+  // do texto livre — não o substituem.
+  endereco            String?
+  enderecoCep         String?
+  enderecoLogradouro  String?
+  enderecoNumero      String?
+  enderecoComplemento String?
+  enderecoBairro      String?
+  enderecoCidade      String?
+  enderecoEstado      String?
+  fotoUrl             String?
+  expoPushToken       String?
+  senhaHash           String
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
-  autorizacoes Autorizacao[]
-  solicitacoes SolicitacaoCompartilhamento[]
-  logsAcesso   LogAcesso[]
+  autorizacoes         Autorizacao[]
+  solicitacoes         SolicitacaoCompartilhamento[]
+  logsAcesso           LogAcesso[]
+  privacidadeCategoria PrivacidadeCategoria[]
 
   @@map("users")
+}
+
+// -----------------------------
+// PRIVACIDADE POR CATEGORIA (o que o usuário libera, por padrão, pra cada
+// TIPO de estabelecimento — ex.: libera Foto+Nome+Telefone pra restaurante,
+// mas não CPF/RG/Endereço). Aplicada em POST /auth/request: filtra
+// camposPedidos pelos campos liberados na categoria da empresa solicitante
+// (ou em GERAL, se não houver regra específica pra aquela categoria) antes
+// de a pessoa nem chegar a ver a tela de aprovação — não é uma segunda
+// camada por cima do consentimento pontual, é um filtro que roda ANTES dele.
+// -----------------------------
+model PrivacidadeCategoria {
+  id             String               @id @default(uuid())
+  userId         String
+  categoria      CategoriaPrivacidade
+  foto           Boolean              @default(false)
+  nome           Boolean              @default(true)
+  cpf            Boolean              @default(false)
+  rg             Boolean              @default(false)
+  dataNascimento Boolean              @default(false)
+  telefone       Boolean              @default(false)
+  endereco       Boolean              @default(false)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, categoria])
+  @@map("privacidade_categorias")
 }
 
 // -----------------------------
 // EMPRESA
 // -----------------------------
 model Company {
-  id                      String           @id @default(uuid())
-  nome                    String
-  cnpj                    String           @unique
-  categoria               CategoriaEmpresa
-  emailContato            String           @unique
-  senhaHash               String
-  apiKeyHash              String           @unique
-  webhookUrl              String?
-  logoUrl                 String?
-  resetPasswordTokenHash  String?          @unique
-  resetPasswordExpiresAt  DateTime?
+  id                     String           @id @default(uuid())
+  nome                   String
+  cnpj                   String           @unique
+  categoria              CategoriaEmpresa
+  emailContato           String           @unique
+  senhaHash              String
+  apiKeyHash             String           @unique
+  webhookUrl             String?
+  logoUrl                String?
+  resetPasswordTokenHash String?          @unique
+  resetPasswordExpiresAt DateTime?
   // Encerramento de conta (DELETE /companies/me) é SOFT DELETE — ao contrário do
   // usuário comum (que tem exclusão definitiva/LGPD via DELETE /users/me), a
   // empresa é só marcada como inativa. Isso preserva os logs de auditoria
   // (LogAcesso) e o histórico de autorizações/solicitações ligados a ela, que
   // continuam existindo no banco mesmo depois do encerramento.
-  ativa                   Boolean          @default(true)
-  encerradaEm             DateTime?
-  createdAt               DateTime         @default(now())
-  updatedAt               DateTime         @updatedAt
+  ativa                  Boolean          @default(true)
+  encerradaEm            DateTime?
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
 
   unidades          Unidade[]
   camposSolicitados CampoSolicitadoEmpresa[]
@@ -111,7 +169,7 @@ model Unidade {
   qrCodeToken String   @unique @default(uuid())
   createdAt   DateTime @default(now())
 
-  company      Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company      Company                       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   solicitacoes SolicitacaoCompartilhamento[]
 
   @@map("unidades")

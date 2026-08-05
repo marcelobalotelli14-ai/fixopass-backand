@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma';
 import { identifyActor } from '../middleware/identifyActor';
 import { dispararPush } from '../lib/pushNotification';
 import { asyncHandler } from '../lib/asyncHandler';
+import { filtrarCamposPorPrivacidade } from '../lib/privacidade';
 
 const router = Router();
 
@@ -89,7 +90,12 @@ router.post(
         return res.status(404).json({ error: 'QR Code inválido ou expirado.' });
       }
 
-      const camposPedidos = await buscarCamposConfigurados(resolvedCompanyId);
+      const camposConfigurados = await buscarCamposConfigurados(resolvedCompanyId);
+      // Filtra pelo que o usuário já liberou de antemão pra esse TIPO de
+      // estabelecimento (Meus dados > Controle de privacidade) — a pessoa só
+      // vê, na tela de aprovação, os campos que a empresa pede E que ela
+      // mesma já autorizou pra essa categoria.
+      const camposPedidos = await filtrarCamposPorPrivacidade(actor.id, company.categoria, camposConfigurados);
 
       const solicitacao = await prisma.solicitacaoCompartilhamento.create({
         data: {
@@ -139,7 +145,12 @@ router.post(
       return res.status(404).json({ error: 'Usuário FIXO PASS não encontrado.' });
     }
 
-    const camposFinal = camposPedidos && camposPedidos.length > 0 ? camposPedidos : await buscarCamposConfigurados(companyId);
+    const camposConfigurados = camposPedidos && camposPedidos.length > 0 ? camposPedidos : await buscarCamposConfigurados(companyId);
+    // Mesmo filtro do fluxo do app: o ERP identificando o cliente por
+    // CPF/telefone não pode pedir mais do que a pessoa já liberou de
+    // antemão pra essa categoria de estabelecimento — senão o painel de
+    // privacidade só protegeria contra o próprio app, não contra o ERP.
+    const camposFinal = await filtrarCamposPorPrivacidade(user.id, actor.categoria, camposConfigurados);
 
     const solicitacao = await prisma.solicitacaoCompartilhamento.create({
       data: {

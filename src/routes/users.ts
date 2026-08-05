@@ -16,7 +16,15 @@ const cadastroSchema = z.object({
   cpf: z.string().min(11).max(14),
   rg: z.string().optional(),
   dataNascimento: z.string().datetime().optional(), // ISO 8601
-  endereco: z.string().optional(),
+  endereco: z.string().optional(), // texto livre — mantido pelo mobile-app
+  // Endereço estruturado (opcional, preenchido pela web) — ver comentário no schema.prisma.
+  enderecoCep: z.string().optional(),
+  enderecoLogradouro: z.string().optional(),
+  enderecoNumero: z.string().optional(),
+  enderecoComplemento: z.string().optional(),
+  enderecoBairro: z.string().optional(),
+  enderecoCidade: z.string().optional(),
+  enderecoEstado: z.string().optional(),
   fotoUrl: z.string().url().optional(),
   senha: z.string().min(6),
 });
@@ -132,6 +140,39 @@ router.put(
 
     const { senhaHash, ...perfil } = user;
     return res.status(200).json(perfil);
+  })
+);
+
+const trocarSenhaSchema = z.object({
+  senhaAtual: z.string().min(1),
+  novaSenha: z.string().min(6),
+});
+
+/**
+ * PUT /users/me/senha
+ * Troca de senha exigindo a senha atual (diferente de
+ * POST /companies/forgot-password, que é fluxo de "esqueci a senha" por
+ * token/e-mail — aqui o usuário já está logado e sabe a senha atual).
+ */
+router.put(
+  '/me/senha',
+  userAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = trocarSenhaSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+    }
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId } });
+    const senhaCorreta = await bcrypt.compare(parsed.data.senhaAtual, user.senhaHash);
+    if (!senhaCorreta) {
+      return res.status(401).json({ error: 'Senha atual incorreta.' });
+    }
+
+    const senhaHash = await bcrypt.hash(parsed.data.novaSenha, 10);
+    await prisma.user.update({ where: { id: req.userId }, data: { senhaHash } });
+
+    return res.status(204).send();
   })
 );
 
@@ -259,6 +300,87 @@ router.put(
     });
 
     return res.status(204).send();
+  })
+);
+
+const CATEGORIAS_PRIVACIDADE = ['RESTAURANTE', 'CONDOMINIO', 'HOSPITAL', 'HOTEL', 'LOJA', 'OUTROS', 'GERAL'] as const;
+
+// Mesmos defaults da coluna no schema.prisma (nome liberado, resto bloqueado)
+// — usado só pra preencher categorias que o usuário ainda não configurou,
+// sem criar uma linha no banco pra cada uma. Ver comentário completo em
+// PrivacidadeCategoria no schema.prisma.
+const PRIVACIDADE_PADRAO = { foto: false, nome: true, cpf: false, rg: false, dataNascimento: false, telefone: false, endereco: false };
+
+/**
+ * GET /users/me/privacidade
+ * Preferências de compartilhamento por TIPO de estabelecimento (ex.: libera
+ * Foto+Nome+Telefone pra restaurante, mas não CPF/RG/Endereço). Sempre
+ * devolve as 7 categorias (RESTAURANTE..OUTROS + GERAL); pra quem ainda não
+ * configurou uma categoria, devolve o padrão sugerido com `existe: false` —
+ * a tela pode pré-marcar os toggles com isso, mas POST /auth/request só
+ * aplica o filtro de fato pras categorias com `existe: true` (ver
+ * filtrarCamposPorPrivacidade em auth.ts).
+ */
+router.get(
+  '/me/privacidade',
+  userAuth,
+  asyncHandler(async (req, res) => {
+    const salvas = await prisma.privacidadeCategoria.findMany({ where: { userId: req.userId } });
+    const porCategoria = new Map(salvas.map((s) => [s.categoria, s]));
+
+    const resposta = CATEGORIAS_PRIVACIDADE.map((categoria) => {
+      const salva = porCategoria.get(categoria);
+      if (salva) {
+        const { id, userId, categoria: _categoria, createdAt, updatedAt, ...regras } = salva;
+        return { categoria, ...regras, existe: true };
+      }
+      return { categoria, ...PRIVACIDADE_PADRAO, existe: false };
+    });
+
+    return res.status(200).json(resposta);
+  })
+);
+
+const regraPrivacidadeSchema = z.object({
+  categoria: z.enum(CATEGORIAS_PRIVACIDADE),
+  foto: z.boolean(),
+  nome: z.boolean(),
+  cpf: z.boolean(),
+  rg: z.boolean(),
+  dataNascimento: z.boolean(),
+  telefone: z.boolean(),
+  endereco: z.boolean(),
+});
+const privacidadeSchema = z.object({
+  categorias: z.array(regraPrivacidadeSchema).min(1),
+});
+
+/**
+ * PUT /users/me/privacidade
+ * Salva (upsert) as regras de uma ou mais categorias de uma vez — a tela
+ * manda o estado atual de todas as abas que a pessoa mexeu.
+ */
+router.put(
+  '/me/privacidade',
+  userAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = privacidadeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+    }
+
+    await prisma.$transaction(
+      parsed.data.categorias.map(({ categoria, ...regras }) =>
+        prisma.privacidadeCategoria.upsert({
+          where: { userId_categoria: { userId: req.userId!, categoria } },
+          update: regras,
+          create: { userId: req.userId!, categoria, ...regras },
+        })
+      )
+    );
+
+    const atualizado = await prisma.privacidadeCategoria.findMany({ where: { userId: req.userId } });
+    return res.status(200).json(atualizado);
   })
 );
 

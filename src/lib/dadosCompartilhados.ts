@@ -1,4 +1,22 @@
 /**
+ * Monta uma linha de endereço legível a partir dos campos estruturados
+ * (preenchidos pela web em Meus dados). Cai pro texto livre (`endereco`,
+ * o que o mobile-app sempre enviou) quando a pessoa não preencheu os
+ * campos estruturados — nunca os dois juntos, pra não duplicar informação.
+ */
+function formatarEndereco(user: any): string | null {
+  const { enderecoLogradouro, enderecoNumero, enderecoComplemento, enderecoBairro, enderecoCidade, enderecoEstado, enderecoCep } = user;
+  const temEstruturado = [enderecoLogradouro, enderecoNumero, enderecoBairro, enderecoCidade, enderecoEstado].some(Boolean);
+  if (!temEstruturado) return user.endereco ?? null;
+
+  const linha1 = [enderecoLogradouro, enderecoNumero].filter(Boolean).join(', ') + (enderecoComplemento ? ` - ${enderecoComplemento}` : '');
+  const linha2 = [enderecoBairro, enderecoCidade && enderecoEstado ? `${enderecoCidade}/${enderecoEstado}` : enderecoCidade || enderecoEstado, enderecoCep]
+    .filter(Boolean)
+    .join(', ');
+  return [linha1, linha2].filter(Boolean).join(' - ');
+}
+
+/**
  * Monta o payload de dados contendo SOMENTE os campos autorizados/liberados,
  * conforme o exemplo da especificação:
  * { nome: "", telefone: "", endereco: "", cpf: "" }
@@ -16,7 +34,7 @@ export function montarPayloadDados(user: any, campos: string[]) {
     CPF: user.cpf,
     RG: user.rg,
     DATA_NASCIMENTO: user.dataNascimento,
-    ENDERECO: user.endereco,
+    ENDERECO: formatarEndereco(user),
     FOTO: user.fotoUrl,
   };
 
