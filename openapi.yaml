@@ -184,6 +184,12 @@ paths:
       security: [{ UserSession: [] }]
       responses:
         '200': { description: Perfil atualizado }
+    delete:
+      summary: Usuário exclui a própria conta (LGPD) — remove em cascata autorizações, solicitações e logs de acesso
+      security: [{ UserSession: [] }]
+      responses:
+        '204': { description: Conta excluída }
+        '401': { description: Usuário não autenticado ou não encontrado }
 
   /users/me/autorizacoes:
     get:

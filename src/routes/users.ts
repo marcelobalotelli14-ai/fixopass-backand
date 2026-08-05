@@ -134,6 +134,22 @@ router.put(
 );
 
 /**
+ * DELETE /users/me
+ * Exclusão definitiva da própria conta (LGPD). O schema tem
+ * `onDelete: Cascade` de Autorizacao, SolicitacaoCompartilhamento e
+ * LogAcesso para User, então apagar o usuário já remove tudo isso junto —
+ * não precisa (e não deve) apagar essas tabelas manualmente aqui.
+ */
+router.delete(
+  '/me',
+  userAuth,
+  asyncHandler(async (req, res) => {
+    await prisma.user.delete({ where: { id: req.userId } });
+    return res.status(204).send();
+  })
+);
+
+/**
  * GET /users/me/autorizacoes
  * Tela "Empresas autorizadas": empresa, dados liberados e data da autorização.
  */

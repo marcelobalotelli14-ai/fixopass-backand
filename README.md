@@ -12,8 +12,9 @@ Cobre os itens **1 (banco), 2 (cadastro usuário), 3 (cadastro empresa), 4 (perm
   - `POST /users` — cadastro inicial (todos os campos da especificação).
   - `POST /users/login` — login MVP (retorna `userId` para usar no header `X-USER-ID`).
   - `GET /users/me` / `PUT /users/me` — ver e editar o próprio perfil.
+  - `DELETE /users/me` — exclusão definitiva da própria conta (LGPD); remove em cascata autorizações, solicitações e logs de acesso.
   - `GET /users/me/autorizacoes` — tela "Empresas autorizadas" (empresa, dados liberados, data).
-  - `DELETE /users/me/autorizacoes/:companyId` — revogar acesso de uma empresa.
+  - `DELETE /users/me/autorizacoes/:companyId` — revogar acesso de uma empresa (sem apagar a conta).
   - `PUT /users/me/push-token` — salva o Expo Push Token do dispositivo, usado para avisar o usuário quando o ERP cria uma solicitação sem ele estar com o app aberto.
 
 - **Cadastro e configuração de empresa** — item 3:
