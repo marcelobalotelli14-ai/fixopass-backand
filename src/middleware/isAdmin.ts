@@ -19,8 +19,10 @@ export function isAdmin(req: Request, res: Response, next: NextFunction) {
     return res.status(503).json({ error: 'Painel admin não configurado (ADMIN_SECRET ausente no servidor).' });
   }
 
-  const recebido = req.header('X-ADMIN-SECRET');
-  if (recebido !== segredoEsperado) {
+  // Node normaliza nomes de header pra minúsculo em req.headers — o cliente
+  // pode mandar "X-ADMIN-SECRET" ou "x-admin-secret", chega igual aqui.
+  const recebido = req.headers['x-admin-secret'];
+  if (typeof recebido !== 'string' || recebido !== segredoEsperado) {
     return res.status(401).json({ error: 'Acesso negado.' });
   }
 

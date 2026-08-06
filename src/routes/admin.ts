@@ -9,6 +9,23 @@ const router = Router();
 router.use(isAdmin);
 
 /**
+ * POST /admin/auth
+ * Endpoint dedicado só pra testar o X-ADMIN-SECRET, sem precisar buscar
+ * stats/companies inteiros só pra descobrir se a senha está certa (o
+ * admin-dashboard.html ainda valida via carregarTudo() — esta rota fica
+ * disponível pra quando quiser trocar por essa checagem mais leve). Se a
+ * requisição chegou até aqui é porque o middleware `isAdmin` já validou o
+ * segredo — então só confirma com 200. Erros (401 segredo errado, 503 não
+ * configurado) já saem direto do middleware, antes de chegar na rota.
+ */
+router.post(
+  '/auth',
+  asyncHandler(async (_req, res) => {
+    return res.status(200).json({ ok: true });
+  })
+);
+
+/**
  * GET /admin/companies
  * Lista todas as empresas (inclusive as com `ativa:false`/encerradas — o
  * Super Admin precisa ver o quadro completo) com status de assinatura,
