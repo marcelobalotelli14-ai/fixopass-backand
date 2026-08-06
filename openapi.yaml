@@ -518,6 +518,32 @@ paths:
                   qrCodeDataUrl: { type: string }
         '404': { description: Unidade não encontrada }
 
+  /companies/me/pix:
+    post:
+      summary: Gera uma cobrança PIX real (Mercado Pago) para renovar a mensalidade da empresa logada
+      description: >
+        Cria a cobrança de verdade na API do Mercado Pago (não é um mock) —
+        devolve o QR Code (imagem) e o código "copia e cola" pra pagar. A
+        confirmação chega depois via POST /webhooks/mercadopago; esta rota só
+        cria a cobrança, não ativa a empresa sozinha.
+      security: [{ CompanyPanelSession: [] }]
+      responses:
+        '201':
+          description: Cobrança PIX criada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  paymentId: { type: string }
+                  status: { type: string }
+                  qrCode: { type: string, description: "Código PIX copia e cola" }
+                  qrCodeBase64: { type: string, description: "Imagem PNG do QR Code, em base64" }
+                  valorCentavos: { type: integer }
+                  expiraEm: { type: string, format: date-time }
+        '404': { description: Empresa não encontrada }
+        '503': { description: MERCADOPAGO_ACCESS_TOKEN não configurado no servidor }
+
   /companies/me/compartilhamentos:
     get:
       summary: Histórico de compartilhamentos recebidos (LogAcesso) com os dados atuais do cliente já resolvidos (foto incluída) e o contador de pareamentos (accessCount/lastAccessedAt) de cada cliente com essa empresa
@@ -675,6 +701,34 @@ paths:
         '401': { description: Segredo do webhook inválido }
         '404': { description: Empresa não encontrada }
         '503': { description: PAYMENT_WEBHOOK_SECRET não configurado no servidor }
+
+  /webhooks/mercadopago:
+    post:
+      summary: Notificação real do Mercado Pago confirmando um pagamento PIX criado em POST /companies/me/pix
+      description: >
+        Não confia no corpo da notificação — ao receber, consulta o
+        pagamento de verdade na API do Mercado Pago (GET /v1/payments/:id)
+        usando o MERCADOPAGO_ACCESS_TOKEN do próprio servidor antes de
+        ativar qualquer coisa. Aceita tanto o formato novo de webhook
+        ({type, data:{id}} no corpo) quanto o IPN legado (?topic=&id= na
+        query string). Idempotente: reenvios da mesma notificação não somam
+        dias duas vezes.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type: { type: string, example: payment }
+                data:
+                  type: object
+                  properties:
+                    id: { type: string }
+              additionalProperties: true
+      responses:
+        '200': { description: "Notificação processada (pode ou não ter resultado em ativação — ver campo 'aplicado' no corpo)" }
+        '503': { description: MERCADOPAGO_ACCESS_TOKEN não configurado no servidor }
 
   /admin/companies:
     get:

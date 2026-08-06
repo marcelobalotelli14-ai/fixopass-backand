@@ -139,34 +139,40 @@ model PrivacidadeCategoria {
 // EMPRESA
 // -----------------------------
 model Company {
-  id                     String           @id @default(uuid())
-  nome                   String
-  cnpj                   String           @unique
-  categoria              CategoriaEmpresa
-  emailContato           String           @unique
-  senhaHash              String
-  apiKeyHash             String           @unique
-  webhookUrl             String?
-  logoUrl                String?
-  resetPasswordTokenHash String?          @unique
-  resetPasswordExpiresAt DateTime?
+  id                          String           @id @default(uuid())
+  nome                        String
+  cnpj                        String           @unique
+  categoria                   CategoriaEmpresa
+  emailContato                String           @unique
+  senhaHash                   String
+  apiKeyHash                  String           @unique
+  webhookUrl                  String?
+  logoUrl                     String?
+  resetPasswordTokenHash      String?          @unique
+  resetPasswordExpiresAt      DateTime?
   // Encerramento de conta (DELETE /companies/me) é SOFT DELETE — ao contrário do
   // usuário comum (que tem exclusão definitiva/LGPD via DELETE /users/me), a
   // empresa é só marcada como inativa. Isso preserva os logs de auditoria
   // (LogAcesso) e o histórico de autorizações/solicitações ligados a ela, que
   // continuam existindo no banco mesmo depois do encerramento.
-  ativa                  Boolean          @default(true)
-  encerradaEm            DateTime?
+  ativa                       Boolean          @default(true)
+  encerradaEm                 DateTime?
   // Assinatura/pagamento — dimensão INDEPENDENTE de `ativa` (aquilo é "a
   // empresa fechou a própria conta"; isto é "a mensalidade está em dia").
   // Ver src/lib/assinatura.ts pra transição automática TRIAL->EXPIRED e
   // ACTIVE->EXPIRED, e POST /auth/request pra onde isso bloqueia pareamento.
-  status                 StatusAssinatura @default(TRIAL)
-  trialEndsAt            DateTime?
-  nextDueDate            DateTime?
-  precoMensalCentavos    Int?
-  createdAt              DateTime         @default(now())
-  updatedAt              DateTime         @updatedAt
+  status                      StatusAssinatura @default(TRIAL)
+  trialEndsAt                 DateTime?
+  nextDueDate                 DateTime?
+  precoMensalCentavos         Int?
+  // Id do último pagamento do Mercado Pago já aplicado (soma de +30 dias já
+  // feita) — guarda contra processar o mesmo pagamento duas vezes, já que o
+  // Mercado Pago pode reenviar a mesma notificação de webhook mais de uma
+  // vez (comportamento documentado deles, não é bug). Ver POST
+  // /webhooks/mercadopago.
+  ultimoPagamentoIdProcessado String?
+  createdAt                   DateTime         @default(now())
+  updatedAt                   DateTime         @updatedAt
 
   unidades          Unidade[]
   camposSolicitados CampoSolicitadoEmpresa[]

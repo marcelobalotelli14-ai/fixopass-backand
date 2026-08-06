@@ -12,6 +12,7 @@ import { cloudinary } from '../lib/cloudinary';
 import { enviarEmailRecuperacaoSenha } from '../lib/email';
 import { montarPayloadDados } from '../lib/dadosCompartilhados';
 import { TRIAL_DIAS, PRECO_PADRAO_CENTAVOS, calcularDaysLeftInTrial, diasEmMs } from '../lib/assinatura';
+import { criarCobrancaPix, MercadoPagoNaoConfiguradoError } from '../lib/mercadopago';
 
 const router = Router();
 
@@ -532,6 +533,40 @@ router.post(
     });
 
     return res.status(200).json({ mensagem: 'Senha redefinida com sucesso.' });
+  })
+);
+
+/**
+ * POST /companies/me/pix
+ * Gera uma cobrança PIX REAL (Mercado Pago) pra renovar a mensalidade da
+ * empresa logada — usada pela tela de checkout quando o trial/assinatura
+ * expira, mas também disponível a qualquer momento pra quem quiser renovar
+ * antecipado. Devolve o QR Code (imagem base64) e o código "copia e cola".
+ *
+ * A confirmação de pagamento chega depois via POST /webhooks/mercadopago —
+ * esta rota só CRIA a cobrança, não ativa nada sozinha.
+ *
+ * Sem MERCADOPAGO_ACCESS_TOKEN configurado no servidor, devolve 503 (fail
+ * closed) em vez de inventar um QR Code que não seria pago de verdade.
+ */
+router.post(
+  '/me/pix',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const company = await prisma.company.findUnique({ where: { id: req.panelCompanyId } });
+    if (!company) {
+      return res.status(404).json({ error: 'Empresa não encontrada.' });
+    }
+
+    try {
+      const cobranca = await criarCobrancaPix(company);
+      return res.status(201).json(cobranca);
+    } catch (err) {
+      if (err instanceof MercadoPagoNaoConfiguradoError) {
+        return res.status(503).json({ error: err.message });
+      }
+      throw err;
+    }
   })
 );
 

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { asyncHandler } from '../lib/asyncHandler';
 import { MENSALIDADE_DIAS, diasEmMs } from '../lib/assinatura';
+import { consultarPagamento, MercadoPagoNaoConfiguradoError } from '../lib/mercadopago';
 
 const router = Router();
 
@@ -75,6 +76,97 @@ router.post(
       companyId: atualizada.id,
       status: atualizada.status,
       nextDueDate: atualizada.nextDueDate,
+    });
+  })
+);
+
+/**
+ * POST /webhooks/mercadopago
+ * Notificação REAL do Mercado Pago (configurada como notification_url da
+ * aplicação, ou recebida via IPN legado) — confirmação de pagamento PIX
+ * criado em POST /companies/me/pix.
+ *
+ * SEGURANÇA: diferente de POST /webhooks/payment (segredo compartilhado
+ * simples), esta rota não confia em nada do que chega na notificação além
+ * do id do pagamento. Assim que recebe um aviso, ela CONSULTA o pagamento
+ * de verdade na API do Mercado Pago (GET /v1/payments/:id) usando nosso
+ * próprio MERCADOPAGO_ACCESS_TOKEN — só esse token consegue fazer essa
+ * consulta responder "approved", então não dá pra forjar uma ativação só
+ * mandando um POST pra essa URL com um payload inventado. Isso segue a
+ * própria recomendação do Mercado Pago de sempre re-consultar o pagamento
+ * em vez de confiar cegamente no corpo da notificação.
+ * https://www.mercadopago.com.br/developers/pt/docs/checkout-pro/additional-content/notifications/webhooks
+ *
+ * O Mercado Pago manda o id do pagamento de duas formas possíveis
+ * (dependendo de como a notificação foi configurada): no corpo
+ * `{ type: 'payment', data: { id } }` (webhooks novos) ou na query string
+ * `?topic=payment&id=...` (IPN legado) — esta rota aceita as duas.
+ *
+ * Sem MERCADOPAGO_ACCESS_TOKEN configurado, recusa com 503 (fail closed) —
+ * sem a credencial não dá nem pra confirmar se o pagamento é real.
+ */
+router.post(
+  '/mercadopago',
+  asyncHandler(async (req, res) => {
+    const tipo = req.body?.type ?? req.query.topic;
+    const paymentId = req.body?.data?.id ?? req.query.id;
+
+    // Mercado Pago também notifica outros tipos de evento (merchant_order,
+    // etc.) que não nos interessam aqui — só respondemos 200 e ignoramos,
+    // pra ele não ficar reenviando à toa.
+    if (tipo !== 'payment' || !paymentId) {
+      return res.status(200).json({ ignorado: true });
+    }
+
+    let statusPagamento;
+    try {
+      statusPagamento = await consultarPagamento(String(paymentId));
+    } catch (err) {
+      if (err instanceof MercadoPagoNaoConfiguradoError) {
+        return res.status(503).json({ error: err.message });
+      }
+      throw err;
+    }
+
+    if (!statusPagamento.companyId) {
+      return res.status(200).json({ aviso: 'Pagamento sem external_reference — não sei a qual empresa pertence.' });
+    }
+
+    if (statusPagamento.status !== 'approved') {
+      // Pendente, rejeitado, cancelado... nada a fazer ainda; o Mercado
+      // Pago manda uma nova notificação quando o status mudar de verdade.
+      return res.status(200).json({ status: statusPagamento.status, aplicado: false });
+    }
+
+    const company = await prisma.company.findUnique({ where: { id: statusPagamento.companyId } });
+    if (!company) {
+      return res.status(200).json({ aviso: 'Empresa do external_reference não encontrada.' });
+    }
+
+    // Idempotência: o Mercado Pago pode reenviar a mesma notificação mais de
+    // uma vez — sem essa checagem, cada reenvio somaria +30 dias de novo.
+    if (company.ultimoPagamentoIdProcessado === statusPagamento.paymentId) {
+      return res.status(200).json({ status: 'approved', aplicado: false, motivo: 'já processado' });
+    }
+
+    const base = company.nextDueDate && company.nextDueDate.getTime() > Date.now() ? company.nextDueDate : new Date();
+    const nextDueDate = new Date(base.getTime() + diasEmMs(MENSALIDADE_DIAS));
+
+    const atualizada = await prisma.company.update({
+      where: { id: company.id },
+      data: {
+        status: 'ACTIVE',
+        nextDueDate,
+        trialEndsAt: null,
+        ultimoPagamentoIdProcessado: statusPagamento.paymentId,
+      },
+    });
+
+    return res.status(200).json({
+      companyId: atualizada.id,
+      status: atualizada.status,
+      nextDueDate: atualizada.nextDueDate,
+      aplicado: true,
     });
   })
 );
