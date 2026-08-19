@@ -6,6 +6,7 @@ import { dispararPush } from '../lib/pushNotification';
 import { asyncHandler } from '../lib/asyncHandler';
 import { filtrarCamposPorPrivacidade } from '../lib/privacidade';
 import { verificarAssinatura, MENSAGEM_ASSINATURA_VENCIDA } from '../lib/assinatura';
+import { buscarCamposConfigurados } from '../lib/camposSolicitados';
 
 const router = Router();
 
@@ -198,17 +199,6 @@ router.post(
     });
   })
 );
-
-/**
- * Busca os campos que a empresa configurou como necessários
- * (PUT /companies/me/campos-solicitados). Se a empresa ainda não configurou
- * nada, cai de volta para NOME + TELEFONE como padrão mínimo seguro.
- */
-async function buscarCamposConfigurados(companyId: string): Promise<(typeof CAMPOS)[number][]> {
-  const configurados = await prisma.campoSolicitadoEmpresa.findMany({ where: { companyId } });
-  if (configurados.length === 0) return ['NOME', 'TELEFONE'];
-  return configurados.map((c) => c.campo);
-}
 
 /**
  * GET /auth/request/:id

@@ -38,6 +38,23 @@ components:
       in: header
       name: X-WEBHOOK-SECRET
       description: Segredo compartilhado do webhook de pagamento (variável de ambiente PAYMENT_WEBHOOK_SECRET) — NÃO é verificação de assinatura oficial do gateway, ver comentário em src/routes/webhooks.ts.
+    OAuthClientBasicAuth:
+      type: http
+      scheme: basic
+      description: >
+        client_id/client_secret de um OAuthClient do canal WEB/API (ver
+        POST /companies/me/integracoes), enviados como Authorization: Basic
+        base64(clientId:clientSecret) — RFC 7617/RFC 6749 §2.3.1. Usado
+        apenas server-to-server pelo backend do sistema externo — nunca pelo
+        navegador do cliente final (neste projeto o client_id também nunca
+        vai pro navegador, ver src/routes/oauth.ts).
+    OAuthBearerToken:
+      type: http
+      scheme: bearer
+      description: >
+        access_token emitido por POST /oauth/token — enviado como
+        Authorization: Bearer <access_token> em GET /oauth/userinfo. Curta
+        duração (15 minutos), reutilizável dentro da validade.
 
   schemas:
     Campo:
@@ -570,6 +587,66 @@ paths:
       responses:
         '200': { description: Webhook configurado }
 
+  /companies/me/integracoes:
+    post:
+      summary: "[Canal WEB/API] Cria uma integração (ex.: Cardápio Online) — devolve client_secret uma única vez"
+      security: [{ CompanyPanelSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nome, redirectUris]
+              properties:
+                nome: { type: string }
+                redirectUris: { type: array, items: { type: string, format: uri }, minItems: 1, maxItems: 5 }
+      responses:
+        '201': { description: "Integração criada — resposta inclui clientId e clientSecret (só desta vez)" }
+    get:
+      summary: "[Canal WEB/API] Lista as integrações da empresa (nunca inclui o client_secret)"
+      security: [{ CompanyPanelSession: [] }]
+      responses:
+        '200': { description: Lista de integrações }
+
+  /companies/me/integracoes/{id}:
+    put:
+      summary: "[Canal WEB/API] Edita nome e/ou redirectUris de uma integração"
+      security: [{ CompanyPanelSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Integração atualizada }
+        '404': { description: Integração não encontrada }
+    delete:
+      summary: "[Canal WEB/API] Revoga a integração — client_id/client_secret param de funcionar imediatamente"
+      security: [{ CompanyPanelSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Revogada (soft delete — histórico é mantido) }
+        '404': { description: Integração não encontrada }
+
+  /companies/me/integracoes/{id}/regenerate-secret:
+    post:
+      summary: "[Canal WEB/API] Gera um novo client_secret — o anterior para de funcionar"
+      security: [{ CompanyPanelSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: "Novo client_secret (só desta vez)" }
+        '404': { description: Integração não encontrada }
+        '409': { description: Integração revogada }
+
   /auth/request/{id}:
     get:
       summary: Consulta o status de uma solicitação (alternativa ao webhook, para ERPs que fazem polling)
@@ -675,6 +752,207 @@ paths:
           description: Nenhuma autorização ativa para este usuário
         '404':
           description: Usuário não encontrado
+
+  /oauth/authorize:
+    post:
+      summary: "[Canal WEB/API — OAuth2] Sistema externo (ex.: cardápio online) inicia um compartilhamento"
+      description: >
+        Chamado pelo BACKEND do sistema externo (nunca pelo navegador do
+        cliente — client_id nunca é exposto). Equivalente do POST
+        /auth/request para o canal Web — a diferença é que aqui ainda não se
+        sabe qual usuário vai autorizar; isso só é resolvido quando a pessoa
+        abre a authorizationUrl e loga no FIXO PASS. Fluxo authorization_code
+        (RFC 6749 §4.1), com a criação do request feita server-to-server em
+        vez de um GET público com client_id na query string.
+      security:
+        - OAuthClientBasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [response_type, redirect_uri]
+              properties:
+                response_type:
+                  type: string
+                  enum: [code]
+                redirect_uri:
+                  type: string
+                  format: uri
+                  description: Precisa estar entre as redirectUris cadastradas no OAuthClient.
+                scope:
+                  type: string
+                  description: Espaço-separado (RFC 6749 §3.3), ex. "NOME TELEFONE ENDERECO". Opcional — se omitido, usa os campos configurados pela empresa em PUT /companies/me/campos-solicitados. Precisa ser subconjunto desses campos.
+                state:
+                  type: string
+                  description: Opaco, ecoado de volta exatamente como recebido (proteção CSRF do lado do client). Se omitido, o backend usa o requestId como valor de correlação.
+                purpose:
+                  type: string
+                  description: Finalidade em texto livre, mostrada na tela de consentimento (extensão própria, fora do RFC 6749).
+      responses:
+        '201':
+          description: Solicitação criada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requestId:
+                    type: string
+                    format: uuid
+                  authorizationUrl:
+                    type: string
+                    format: uri
+                  expiresAt:
+                    type: string
+                    format: date-time
+        '400':
+          description: "invalid_request/invalid_scope — dados inválidos, redirect_uri não cadastrada ou escopo não permitido para este client"
+        '401':
+          description: invalid_client — credenciais ausentes ou inválidas
+        '403':
+          description: access_denied — assinatura da empresa vencida
+
+  /oauth/authorize/{requestId}:
+    get:
+      summary: "[Canal WEB/API — OAuth2] Tela de consentimento consulta a solicitação"
+      description: Chamado pela tela de consentimento (app/authorize.html) já com o usuário logado no FIXO PASS.
+      security:
+        - UserSession: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Detalhes para exibir na tela de consentimento (empresa, finalidade, campos pedidos, status)
+        '401':
+          description: Usuário não autenticado
+        '403':
+          description: Solicitação já associada a outro usuário
+        '404':
+          description: Solicitação não encontrada
+    post:
+      summary: "[Canal WEB/API — OAuth2] Usuário aprova ou nega a solicitação"
+      description: >
+        Reaproveita o mesmo núcleo de POST /customer/share — a diferença é
+        que NUNCA devolve os dados pro navegador, só um authorization_code
+        opaco, de uso único e validade curta (2 minutos), que o backend do
+        sistema externo troca em POST /oauth/token.
+      security:
+        - UserSession: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [aprovar]
+              properties:
+                aprovar:
+                  type: boolean
+                camposLiberados:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Campo'
+      responses:
+        '200':
+          description: "Solicitação resolvida — status APROVADA inclui `code`; NEGADA não. `state` é sempre devolvido (o do client, ou requestId como fallback)."
+        '400':
+          description: Dados inválidos
+        '401':
+          description: Usuário não autenticado
+        '403':
+          description: Solicitação não pertence a este usuário
+        '404':
+          description: Solicitação não encontrada
+        '409':
+          description: Solicitação já havia sido resolvida (ou expirou)
+
+  /oauth/token:
+    post:
+      summary: "[Canal WEB/API — OAuth2] Backend do sistema externo troca o authorization_code por um access_token"
+      description: >
+        RFC 6749 §4.1.3. Diferente de trocar direto por dados, aqui o code
+        (uso único) vira um access_token (Bearer, reutilizável dentro da
+        validade) — os dados em si só saem em GET /oauth/userinfo.
+      security:
+        - OAuthClientBasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [grant_type, code, redirect_uri]
+              properties:
+                grant_type:
+                  type: string
+                  enum: [authorization_code]
+                code:
+                  type: string
+                redirect_uri:
+                  type: string
+                  format: uri
+                  description: Precisa ser idêntica à usada em POST /oauth/authorize.
+      responses:
+        '200':
+          description: access_token emitido
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, enum: [Bearer] }
+                  expires_in: { type: integer, description: "Segundos até expirar (900 = 15min)." }
+                  scope: { type: string, description: "Espaço-separado, mesmos campos aprovados pelo usuário." }
+        '400':
+          description: "invalid_request/invalid_grant — código inválido, expirado ou já utilizado; ou redirect_uri não confere"
+        '401':
+          description: invalid_client — credenciais ausentes ou inválidas
+        '403':
+          description: invalid_grant — este código não pertence a este client (isolamento multi-tenant)
+
+  /oauth/userinfo:
+    get:
+      summary: "[Canal WEB/API — OAuth2] Backend do sistema externo obtém os dados autorizados"
+      description: >
+        Chamado pelo BACKEND do sistema externo (Authorization: Bearer
+        <access_token> — sem client_id/client_secret, a posse do token já é
+        a credencial, mesmo padrão de um resource server OAuth2/OIDC
+        userinfo). Diferente do code, o token é reutilizável: pode ser
+        chamado mais de uma vez dentro da validade, sem pedir um novo
+        consentimento — é essa reusabilidade que dá o comportamento de "SSO"
+        ao canal Web/API.
+      security:
+        - OAuthBearerToken: []
+      responses:
+        '200':
+          description: Dados autorizados — SOMENTE os campos que o usuário liberou
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    description: Chaves em minúsculo (nome, telefone, endereco...), só as autorizadas.
+                  scope:
+                    type: string
+        '401':
+          description: invalid_token — ausente, inválido, revogado ou expirado
 
   /webhooks/payment:
     post:

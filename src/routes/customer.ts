@@ -3,9 +3,9 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { companyAuth } from '../middleware/companyAuth';
 import { userAuth } from '../middleware/userAuth';
-import { dispararWebhook } from '../lib/webhook';
 import { asyncHandler } from '../lib/asyncHandler';
 import { montarPayloadDados } from '../lib/dadosCompartilhados';
+import { resolverAprovacao, SolicitacaoInvalidaError, SolicitacaoJaResolvidaError } from '../lib/compartilhamento';
 
 const router = Router();
 
@@ -36,89 +36,31 @@ router.post(
     const { solicitacaoId, aprovar, camposLiberados } = parsed.data;
     const userId = req.userId!;
 
-    const solicitacao = await prisma.solicitacaoCompartilhamento.findUnique({ where: { id: solicitacaoId } });
-
-    if (!solicitacao || solicitacao.userId !== userId) {
-      return res.status(404).json({ error: 'Solicitação não encontrada.' });
+    // Núcleo compartilhado com POST /oauth/authorize/:requestId (canal
+    // WEB/API) — ver lib/compartilhamento.ts. Mesmo comportamento de sempre,
+    // só que agora extraído pra ser reaproveitado pelos dois canais.
+    let resultado;
+    try {
+      resultado = await resolverAprovacao({ solicitacaoId, userId, aprovar, camposLiberados });
+    } catch (err) {
+      if (err instanceof SolicitacaoInvalidaError) {
+        return res.status(404).json({ error: 'Solicitação não encontrada.' });
+      }
+      if (err instanceof SolicitacaoJaResolvidaError) {
+        return res.status(409).json({ error: err.message });
+      }
+      throw err;
     }
 
-    if (solicitacao.status !== 'PENDENTE') {
-      return res.status(409).json({ error: `Solicitação já foi ${solicitacao.status.toLowerCase()}.` });
-    }
-
-    if (!aprovar) {
-      await prisma.solicitacaoCompartilhamento.update({
-        where: { id: solicitacaoId },
-        data: { status: 'NEGADA', resolvidaEm: new Date() },
-      });
+    if (resultado.status === 'NEGADA') {
       return res.status(200).json({ status: 'NEGADA' });
-    }
-
-    // BUG CORRIGIDO: antes, camposLiberados vindo do cliente era aceito sem
-    // checagem — um app malicioso/com bug podia liberar campos que a empresa
-    // nunca pediu (ex.: empresa pediu só Nome+Telefone, cliente "libera" CPF).
-    // Agora filtramos para ser sempre um subconjunto do que foi pedido.
-    const pedidos = new Set(solicitacao.camposPedidos);
-    const camposValidos = (camposLiberados ?? []).filter((c) => pedidos.has(c));
-    const campos = camposValidos.length > 0 ? camposValidos : solicitacao.camposPedidos;
-
-    // Grava/atualiza a autorização permanente do usuário para essa empresa.
-    // Cada aprovação é um "pareamento" — se a autorização já existia (cliente
-    // recorrente), incrementa accessCount; se é a primeira vez, o default do
-    // schema (1) já cobre esse primeiro pareamento.
-    const autorizacaoAtualizada = await prisma.autorizacao.upsert({
-      where: { userId_companyId: { userId, companyId: solicitacao.companyId } },
-      update: {
-        camposLiberados: campos,
-        ativo: true,
-        dataAutorizacao: new Date(),
-        dataRevogacao: null,
-        accessCount: { increment: 1 },
-        lastAccessedAt: new Date(),
-      },
-      create: {
-        userId,
-        companyId: solicitacao.companyId,
-        camposLiberados: campos,
-      },
-    });
-
-    await prisma.solicitacaoCompartilhamento.update({
-      where: { id: solicitacaoId },
-      data: { status: 'APROVADA', resolvidaEm: new Date() },
-    });
-
-    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
-    const dadosLiberados = montarPayloadDados(user, campos);
-
-    await prisma.logAcesso.create({
-      data: {
-        userId,
-        companyId: solicitacao.companyId,
-        camposEnviados: campos,
-        metodo: solicitacao.metodo,
-      },
-    });
-
-    // Entrega automática pro ERP da empresa, se ela tiver configurado um webhook.
-    // Roda em segundo plano — não atrasa nem depende do resultado dessa resposta.
-    const company = await prisma.company.findUnique({ where: { id: solicitacao.companyId } });
-    if (company?.webhookUrl) {
-      dispararWebhook(company.webhookUrl, {
-        solicitacaoId,
-        userId,
-        companyId: solicitacao.companyId,
-        dados: dadosLiberados,
-        accessCount: autorizacaoAtualizada.accessCount,
-        lastAccessedAt: autorizacaoAtualizada.lastAccessedAt,
-      });
     }
 
     return res.status(200).json({
       status: 'APROVADA',
-      dados: dadosLiberados,
-      accessCount: autorizacaoAtualizada.accessCount,
-      lastAccessedAt: autorizacaoAtualizada.lastAccessedAt,
+      dados: resultado.dados,
+      accessCount: resultado.accessCount,
+      lastAccessedAt: resultado.lastAccessedAt,
     });
   })
 );
