@@ -8,7 +8,8 @@
     "build": "prisma generate && tsc",
     "start": "node dist/index.js",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev",
+    "test": "vitest run"
   },
   "dependencies": {
     "@prisma/client": "^5.18.0",
@@ -17,6 +18,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^7.5.1",
     "helmet": "^7.1.0",
     "multer": "^2.2.0",
     "prisma": "^5.18.0",
@@ -32,9 +34,12 @@
     "@types/multer": "^1.4.13",
     "@types/node": "^20.14.15",
     "@types/qrcode": "^1.5.5",
+    "@types/supertest": "^6.0.3",
     "@types/swagger-ui-express": "^4.1.6",
     "@types/yamljs": "^0.2.34",
+    "supertest": "^7.2.2",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
   }
 }

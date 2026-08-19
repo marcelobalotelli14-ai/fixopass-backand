@@ -5,6 +5,7 @@ import { z } from 'zod';
 import QRCode from 'qrcode';
 import { prisma } from '../lib/prisma';
 import { gerarApiKey } from '../lib/apiKey';
+import { gerarClientSecret } from '../lib/integracao';
 import { companyPanelAuth } from '../middleware/companyPanelAuth';
 import { asyncHandler } from '../lib/asyncHandler';
 import { uploadLogo } from '../lib/upload';
@@ -567,6 +568,164 @@ router.post(
       }
       throw err;
     }
+  })
+);
+
+const integracaoSchema = z.object({
+  nome: z.string().min(2),
+  redirectUris: z.array(z.string().url()).min(1).max(5),
+});
+
+/**
+ * POST /companies/me/integracoes
+ * Cria uma integração do canal WEB/API (ex.: "Cardápio Online") — client_id
+ * + client_secret + redirect URIs cadastradas. Mesmo padrão de POST
+ * /companies (API Key): o client_secret em texto puro só existe nesta
+ * resposta, só o hash (bcrypt) fica salvo.
+ */
+router.post(
+  '/me/integracoes',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = integracaoSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+    }
+
+    const clientSecretPlaintext = gerarClientSecret();
+    const clientSecretHash = await bcrypt.hash(clientSecretPlaintext, 10);
+
+    const integracao = await prisma.integracao.create({
+      data: {
+        companyId: req.panelCompanyId!,
+        nome: parsed.data.nome,
+        redirectUris: parsed.data.redirectUris,
+        clientSecretHash,
+      },
+    });
+
+    return res.status(201).json({
+      id: integracao.id,
+      nome: integracao.nome,
+      clientId: integracao.clientId,
+      clientSecret: clientSecretPlaintext,
+      redirectUris: integracao.redirectUris,
+      status: integracao.status,
+      aviso: 'Guarde o Client Secret com segurança — ele não será mostrado novamente. Configure-o apenas no backend do seu sistema, nunca no navegador.',
+    });
+  })
+);
+
+/**
+ * GET /companies/me/integracoes
+ * Lista as integrações da empresa (nunca inclui o client_secret/hash).
+ */
+router.get(
+  '/me/integracoes',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const integracoes = await prisma.integracao.findMany({
+      where: { companyId: req.panelCompanyId },
+      select: { id: true, nome: true, clientId: true, redirectUris: true, status: true, createdAt: true, revogadaEm: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    return res.status(200).json(integracoes);
+  })
+);
+
+/**
+ * Confere que a integração pedida realmente pertence à empresa logada no
+ * painel — mesmo padrão de buscarUnidadeDaEmpresa, pra uma empresa nunca
+ * conseguir editar/revogar a integração de outra.
+ */
+async function buscarIntegracaoDaEmpresa(id: string, companyId: string) {
+  const integracao = await prisma.integracao.findUnique({ where: { id } });
+  if (!integracao || integracao.companyId !== companyId) return null;
+  return integracao;
+}
+
+const atualizarIntegracaoSchema = z
+  .object({
+    nome: z.string().min(2).optional(),
+    redirectUris: z.array(z.string().url()).min(1).max(5).optional(),
+  })
+  .refine((data) => Object.keys(data).length > 0, { message: 'Informe ao menos um campo para atualizar.' });
+
+/**
+ * PUT /companies/me/integracoes/:id
+ * Edita nome e/ou redirect URIs. Não altera client_id nem client_secret.
+ */
+router.put(
+  '/me/integracoes/:id',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const integracao = await buscarIntegracaoDaEmpresa(req.params.id, req.panelCompanyId!);
+    if (!integracao) return res.status(404).json({ error: 'Integração não encontrada.' });
+
+    const parsed = atualizarIntegracaoSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+    }
+
+    const atualizada = await prisma.integracao.update({ where: { id: integracao.id }, data: parsed.data });
+    return res.status(200).json({
+      id: atualizada.id,
+      nome: atualizada.nome,
+      clientId: atualizada.clientId,
+      redirectUris: atualizada.redirectUris,
+      status: atualizada.status,
+    });
+  })
+);
+
+/**
+ * POST /companies/me/integracoes/:id/regenerate-secret
+ * Gera um novo client_secret — o anterior para de funcionar imediatamente
+ * (qualquer authorization_code emitido antes continua válido até expirar
+ * normalmente; só a EMISSÃO de novos codes com o secret antigo é que passa
+ * a falhar, já que o Basic Auth de POST /integrations/* deixa de bater).
+ */
+router.post(
+  '/me/integracoes/:id/regenerate-secret',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const integracao = await buscarIntegracaoDaEmpresa(req.params.id, req.panelCompanyId!);
+    if (!integracao) return res.status(404).json({ error: 'Integração não encontrada.' });
+    if (integracao.status !== 'ATIVA') {
+      return res.status(409).json({ error: 'Esta integração está revogada. Reative-a antes de gerar um novo secret.' });
+    }
+
+    const clientSecretPlaintext = gerarClientSecret();
+    const clientSecretHash = await bcrypt.hash(clientSecretPlaintext, 10);
+    await prisma.integracao.update({ where: { id: integracao.id }, data: { clientSecretHash } });
+
+    return res.status(200).json({
+      clientSecret: clientSecretPlaintext,
+      aviso: 'Guarde com segurança — não será mostrado novamente. O client_secret anterior parou de funcionar.',
+    });
+  })
+);
+
+/**
+ * DELETE /companies/me/integracoes/:id
+ * Revoga a integração — POST /integrations/authorization-requests e
+ * POST /integrations/token passam a rejeitar suas credenciais
+ * imediatamente (integrationAuth checa status === 'ATIVA'). Não apaga o
+ * registro nem o histórico de solicitações/compartilhamentos já feitos por
+ * ela, mesmo critério de soft-delete já usado em DELETE /companies/me.
+ */
+router.delete(
+  '/me/integracoes/:id',
+  companyPanelAuth,
+  asyncHandler(async (req, res) => {
+    const integracao = await buscarIntegracaoDaEmpresa(req.params.id, req.panelCompanyId!);
+    if (!integracao) return res.status(404).json({ error: 'Integração não encontrada.' });
+
+    await prisma.integracao.update({
+      where: { id: integracao.id },
+      data: { status: 'REVOGADA', revogadaEm: new Date() },
+    });
+    return res.status(204).send();
   })
 );
 

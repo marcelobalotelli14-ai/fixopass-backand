@@ -65,6 +65,17 @@ enum MetodoIdentificacao {
   NFC
   QRCODE
   CONSULTA_API
+  WEB_API
+}
+
+// Status de uma Integração (client_id/client_secret do canal Web/API).
+// Separado de "ativa"/"ativo" (usado em Company/Autorizacao) porque aqui o
+// nome precisa deixar claro, no próprio painel, que revogar uma integração
+// derruba imediatamente qualquer authorization_code pendente para ela — não
+// é um soft-delete de cadastro, é "essa credencial parou de funcionar".
+enum StatusIntegracao {
+  ATIVA
+  REVOGADA
 }
 
 // -----------------------------
@@ -179,8 +190,40 @@ model Company {
   autorizacoes      Autorizacao[]
   solicitacoes      SolicitacaoCompartilhamento[]
   logsAcesso        LogAcesso[]
+  integracoes       Integracao[]
 
   @@map("companies")
+}
+
+// -----------------------------
+// INTEGRAÇÃO (canal WEB/API — credenciais de um sistema externo, ex.: o
+// cardápio online da empresa). Uma empresa pode ter mais de uma integração
+// (cardápio, ERP, etc.), cada uma com seu próprio client_id/client_secret e
+// redirect URIs cadastradas — propositalmente separado da apiKeyHash usada
+// pelo ERP (companyAuth): a API Key do ERP roda 100% server-to-server e
+// nunca sai do servidor da empresa; um client_secret de integração também
+// nunca deve ir para o navegador, mas o client_id É exposto no fluxo (é o
+// "usuário" do Basic Auth em POST /integrations/*), então tratá-los como a
+// mesma credencial obrigaria a girar a API Key inteira do ERP só porque um
+// site de terceiro precisou de uma credencial nova.
+// -----------------------------
+model Integracao {
+  id               String           @id @default(uuid())
+  companyId        String
+  nome             String
+  clientId         String           @unique @default(uuid())
+  clientSecretHash String
+  redirectUris     String[]
+  status           StatusIntegracao @default(ATIVA)
+  createdAt        DateTime         @default(now())
+  revogadaEm       DateTime?
+
+  company      Company                       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  solicitacoes SolicitacaoCompartilhamento[]
+  codigos      AutorizacaoCodigo[]
+
+  @@index([companyId])
+  @@map("integracoes")
 }
 
 // Unidades da empresa (ex: filiais)
@@ -239,24 +282,85 @@ model Autorizacao {
 }
 
 // -----------------------------
-// SOLICITAÇÃO DE COMPARTILHAMENTO (evento pontual via NFC/QR)
+// SOLICITAÇÃO DE COMPARTILHAMENTO (evento pontual via NFC/QR/WEB_API)
 // -----------------------------
 model SolicitacaoCompartilhamento {
   id            String              @id @default(uuid())
-  userId        String
+  // Opcional: NFC/QR e o fluxo iniciado pelo ERP sempre sabem o usuário na
+  // hora de criar a solicitação (é quem escaneou, ou quem foi identificado
+  // por CPF/telefone). O canal WEB/API é o único caso em que a solicitação
+  // nasce ANTES de sabermos o usuário — o cardápio cria a solicitação, e só
+  // quando a pessoa loga no FIXO PASS pra ver a tela de consentimento
+  // (GET /integrations/authorize/:id) é que userId é preenchido. Depois de
+  // preenchido, nunca mais muda.
+  userId        String?
   companyId     String
   unidadeId     String?
+  // Preenchidos apenas para metodo = WEB_API — de qual integração veio o
+  // pedido e para qual redirect URI o navegador deve voltar depois de
+  // autorizar. NFC/QR nunca preenchem isso (a "volta" deles é o próprio
+  // app, não um redirect HTTP).
+  integracaoId  String?
+  redirectUri   String?
+  // Finalidade em texto livre, mostrada na tela de consentimento
+  // (ex.: "Preenchimento dos dados de entrega"). Opcional — NFC/QR não usam.
+  purpose       String?
   metodo        MetodoIdentificacao
   camposPedidos CampoDado[]
   status        StatusSolicitacao   @default(PENDENTE)
+  // Validade da PRÓPRIA solicitação (o usuário precisa aprovar/negar antes
+  // disso) — só setado para WEB_API. NFC/QR resolvem na hora (o app já está
+  // com a pessoa em mãos), então nunca precisaram de expiração própria.
+  // Checado sob demanda (mesmo padrão de verificarAssinatura em
+  // lib/assinatura.ts), sem cron/scheduler novo.
+  expiraEm      DateTime?
   criadaEm      DateTime            @default(now())
   resolvidaEm   DateTime?
 
-  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  company Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  unidade Unidade? @relation(fields: [unidadeId], references: [id])
+  user              User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company           Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  unidade           Unidade?           @relation(fields: [unidadeId], references: [id])
+  integracao        Integracao?        @relation(fields: [integracaoId], references: [id], onDelete: Cascade)
+  autorizacaoCodigo AutorizacaoCodigo?
 
   @@map("solicitacoes_compartilhamento")
+}
+
+// -----------------------------
+// AUTHORIZATION CODE (canal WEB/API) — o "authorization_code" temporário
+// entregue ao navegador depois que o usuário aprova em
+// POST /integrations/authorize/:requestId, e trocado pelo BACKEND do
+// sistema externo (nunca pelo navegador) em POST /integrations/token.
+//
+// Guardamos só o HASH (sha256) do código, indexado — o mesmo padrão já
+// usado para resetPasswordTokenHash em Company (ver companies.ts), e
+// deliberadamente diferente do bcrypt "comparar contra todas as linhas"
+// usado em companyAuth/identifyActor: ali há poucas empresas ativas, aqui
+// os códigos se acumulam (um por tentativa de autorização) e o lookup
+// precisa continuar O(1) mesmo depois de meses em produção.
+//
+// usadoEm marca consumo (proteção contra replay); a troca em POST
+// /integrations/token usa um update condicional (WHERE usadoEm IS NULL)
+// para o "uso único" valer mesmo sob duas requisições concorrentes.
+// -----------------------------
+model AutorizacaoCodigo {
+  id              String      @id @default(uuid())
+  codigoHash      String      @unique
+  solicitacaoId   String      @unique
+  integracaoId    String
+  companyId       String
+  userId          String
+  camposLiberados CampoDado[]
+  redirectUri     String
+  expiraEm        DateTime
+  usadoEm         DateTime?
+  createdAt       DateTime    @default(now())
+
+  solicitacao SolicitacaoCompartilhamento @relation(fields: [solicitacaoId], references: [id], onDelete: Cascade)
+  integracao  Integracao                  @relation(fields: [integracaoId], references: [id], onDelete: Cascade)
+
+  @@index([integracaoId])
+  @@map("autorizacao_codigos")
 }
 
 // -----------------------------

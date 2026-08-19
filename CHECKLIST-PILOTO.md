@@ -15,7 +15,9 @@ os pontos abaixo. Estão em ordem de prioridade.
 - [ ] **Backup automático do Postgres** (o banco tem CPF/RG/dados de saúde — perda de dados
       aqui não é só um bug, é um problema de compliance).
 - [ ] **Rate limiting** em `/auth/request`, `/customer/share` e nos endpoints de login
-      (hoje não existe — um script pode tentar CPFs em sequência).
+      (hoje não existe — um script pode tentar CPFs em sequência). O canal WEB/API novo
+      (`/integrations/*`) já nasceu com rate limiting (`express-rate-limit`) — falta
+      estender o mesmo tratamento pras rotas mais antigas.
 
 ## 🟡 Importante antes de escalar além do primeiro piloto
 
@@ -35,9 +37,11 @@ os pontos abaixo. Estão em ordem de prioridade.
 
 - [ ] Paginação nas listas do painel (unidades, campos).
 - [ ] Internacionalização (se algum dia sair do Brasil).
-- [ ] Testes automatizados (unitários/integração) — recomendado ter pelo menos os
-      fluxos críticos (`/auth/request` → `/customer/share`) cobertos antes de qualquer
-      refatoração grande.
+- [ ] Testes automatizados (unitários/integração) — o canal WEB/API já tem cobertura
+      (`src/__tests__/integrations.test.ts`, inclui uma regressão de
+      `/auth/request` → `/customer/share`), mas os fluxos mais antigos (NFC/QR sem
+      passar pelo canal WEB/API, painel de empresa, admin, PIX) ainda não têm testes
+      próprios.
 
 ## Onde hospedar (sugestões, não é uma decisão técnica fechada)
 

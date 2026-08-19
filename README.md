@@ -83,15 +83,52 @@ Sem `MERCADOPAGO_ACCESS_TOKEN` configurado no ambiente, **as duas rotas recusam 
 - **API Key** (`X-API-KEY`): usada pelo **ERP** da empresa para chamar `/auth/request` e `/customer/*`. Máquina-a-máquina.
 - **Login do painel** (`X-COMPANY-ID`, via `/companies/login`): usado por uma **pessoa** logando no painel web para configurar campos e unidades.
 
+## Canal WEB/API — Integrações (terceiro canal, além de NFC e QR Code)
+
+Permite que um sistema externo (ex.: o cardápio online de uma pizzaria) ofereça
+"Preencher com FIXO PASS" sem precisar do app, NFC ou QR Code. Reaproveita o
+mesmo núcleo de usuário/empresa/consentimento/histórico dos outros dois canais
+— não é um sistema paralelo (ver `src/lib/compartilhamento.ts`, compartilhado
+com `POST /customer/share`).
+
+- **`Integracao`** (`POST/GET/PUT/DELETE /companies/me/integracoes`,
+  `POST .../regenerate-secret`) — credenciais `clientId`/`clientSecret` +
+  `redirectUris` cadastradas por integração, gerenciadas no painel da empresa.
+  Separado da `apiKeyHash` do ERP de propósito: o `clientId` é exposto no
+  fluxo (é o "usuário" do Basic Auth), então não faz sentido ser a mesma
+  credencial que o ERP usa 100% server-to-server.
+- **`POST /integrations/authorization-requests`** (Basic Auth
+  `clientId:clientSecret`) — o backend do sistema externo inicia um
+  compartilhamento. Equivalente a `POST /auth/request` pros outros canais, só
+  que aqui a solicitação nasce sem `userId` (só é resolvido quando a pessoa
+  loga no FIXO PASS pra ver a tela de consentimento) — por isso
+  `SolicitacaoCompartilhamento.userId` virou opcional no schema.
+- **`GET`/`POST /integrations/authorize/:requestId`** (`X-USER-ID`) — tela de
+  consentimento consulta e o usuário aprova/nega. Na aprovação, gera um
+  **authorization_code** opaco (32 bytes aleatórios, só o hash sha256 vai pro
+  banco — mesmo padrão do `resetPasswordTokenHash`), de uso único e validade
+  de 2 minutos — nunca devolve os dados pro navegador.
+- **`POST /integrations/token`** (Basic Auth) — o backend do sistema externo
+  troca o code pelos dados autorizados. Consumo é um `UPDATE ... WHERE
+  usadoEm IS NULL` (condicional/atômico), pra uso único valer mesmo sob duas
+  trocas concorrentes do mesmo code.
+- Todas as rotas de `/integrations/*` têm rate limiting (`express-rate-limit`)
+  — as demais rotas do projeto (`/auth/request`, `/customer/share`, logins)
+  continuam sem, como já estavam (ver `CHECKLIST-PILOTO.md`).
+- Documentado em `openapi.yaml` (`/docs`) e testado em
+  `src/__tests__/integrations.test.ts` (fluxo completo, negação, expiração de
+  code e de solicitação, replay, isolamento multi-tenant entre integrações, e
+  regressão de NFC/QR Code).
+
 ## O que falta (próximos passos do seu roadmap)
 
-- Trocar os headers `X-USER-ID` / `X-COMPANY-ID` por JWT real (hoje são simplificações de MVP para já poder testar a API).
+- Trocar os headers `X-USER-ID` / `X-COMPANY-ID` por JWT real (hoje são simplificações de MVP para já poder testar a API). Vale também pro canal WEB/API: a tela de consentimento roda em cima da mesma sessão `X-USER-ID`.
 - ~~Geração do QR Code~~ — feito (`GET /companies/me/unidades/:id/qrcode`). Falta a **leitura** (item 5/6): implementar o scanner de câmera no app mobile e a leitura de NFC.
 - ~~Frontend do painel web da empresa~~ — feito, ver pasta `fixopass-painel-web`.
 - ~~Entrega automática pro ERP~~ — feito (webhook + polling, item 8).
 - ~~Push notification~~ — feito no backend (Expo Push API) e no app (`fixopass-app`). Falta só testar em dispositivo físico, já que push não funciona em emulador.
 - Tela de logs/auditoria no painel (o backend já grava tudo em `LogAcesso`, falta só expor um `GET` e a tela).
-- Rate limiting e rotação de API Key por empresa.
+- Rate limiting nas rotas antigas (`/auth/request`, `/customer/share`, logins) e rotação de API Key por empresa — o canal WEB/API novo já nasce com rate limiting, mas essas continuam pendentes.
 - Item 9 do roadmap (teste com empresas reais): falta decidir onde hospedar (backend + Postgres) para dar acesso a uma empresa piloto de verdade.
 
 > **Atenção**: o schema mudou nesta versão (campo `webhookUrl` em `Company`, `expoPushToken` em `User`, e o valor `CONSULTA_API` adicionado ao enum `MetodoIdentificacao`). Se você já tinha rodado `prisma migrate dev` antes, rode de novo: `npx prisma migrate dev --name add_webhook_push_token_and_consulta_api`.
@@ -120,6 +157,21 @@ npm run dev
 ```
 
 A API sobe em `http://localhost:3000` e a documentação interativa em `http://localhost:3000/docs`.
+
+### Rodando os testes automatizados
+
+```bash
+# usa o mesmo Postgres local do passo 3 acima (ou qualquer Postgres descartável)
+npx prisma migrate deploy
+npm test
+```
+
+`src/__tests__/integrations.test.ts` cria empresas/usuários/integrações de
+teste de verdade contra o `DATABASE_URL` configurado — não use a URL de
+produção. Cobre o canal WEB/API de ponta a ponta (criação de solicitação,
+consentimento, troca de code, expiração, replay, isolamento multi-tenant) e
+uma regressão de NFC/QR Code (`POST /auth/request` + `POST /customer/share`
+continuam funcionando exatamente como antes).
 
 ## Rodando com Docker (recomendado para deploy/piloto)
 
@@ -240,19 +292,28 @@ prisma/
   schema.prisma   → modelo do banco
   seed.ts         → dados de teste
 src/
-  index.ts        → servidor Express + Swagger
+  app.ts          → app Express configurado (rotas + middlewares) — importado por index.ts e pelos testes
+  index.ts        → só chama app.listen()
   lib/
-    prisma.ts     → cliente Prisma
-    apiKey.ts     → geração de API Key para o ERP
+    prisma.ts             → cliente Prisma
+    apiKey.ts              → geração de API Key do ERP (X-API-KEY)
+    integracao.ts           → geração de client_secret (canal WEB/API)
+    authorizationCode.ts    → geração/hash do authorization_code (canal WEB/API)
+    camposSolicitados.ts    → teto de campos que uma empresa permite pedir (compartilhado por NFC/QR e WEB/API)
+    compartilhamento.ts     → núcleo de aprovação/negação, compartilhado por POST /customer/share e POST /integrations/authorize/:id
   middleware/
     companyAuth.ts      → valida API Key da empresa (ERP) — usado em GET /customer/:id
     companyPanelAuth.ts → valida sessão do painel web da empresa (MVP)
     userAuth.ts          → identifica o usuário logado no app (MVP)
     identifyActor.ts     → aceita X-USER-ID OU X-API-KEY em /auth/request (dois fluxos)
+    integrationAuth.ts   → valida Basic Auth (clientId:clientSecret) das rotas /integrations/*
   routes/
-    users.ts      → POST /users, /users/login, /users/me, /users/me/autorizacoes
-    companies.ts  → POST /companies, /companies/login, /companies/me, campos-solicitados, unidades
-    auth.ts       → POST /auth/request
-    customer.ts   → POST /customer/share, GET /customer/:id
+    users.ts        → POST /users, /users/login, /users/me, /users/me/autorizacoes
+    companies.ts    → POST /companies, /companies/login, /companies/me, campos-solicitados, unidades, integracoes
+    auth.ts         → POST /auth/request (NFC/QR)
+    customer.ts     → POST /customer/share, GET /customer/:id (NFC/QR)
+    integrations.ts → canal WEB/API: authorization-requests, authorize/:id, token
+__tests__/
+  integrations.test.ts → suíte do canal WEB/API + regressão de NFC/QR
 openapi.yaml      → documentação Swagger/OpenAPI
 ```
