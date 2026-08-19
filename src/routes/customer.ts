@@ -36,7 +36,7 @@ router.post(
     const { solicitacaoId, aprovar, camposLiberados } = parsed.data;
     const userId = req.userId!;
 
-    // Núcleo compartilhado com POST /integrations/authorize/:requestId (canal
+    // Núcleo compartilhado com POST /oauth/authorize/:requestId (canal
     // WEB/API) — ver lib/compartilhamento.ts. Mesmo comportamento de sempre,
     // só que agora extraído pra ser reaproveitado pelos dois canais.
     let resultado;

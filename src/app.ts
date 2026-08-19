@@ -13,7 +13,7 @@ import usersRouter from './routes/users';
 import companiesRouter from './routes/companies';
 import webhooksRouter from './routes/webhooks';
 import adminRouter from './routes/admin';
-import integrationsRouter from './routes/integrations';
+import oauthRouter from './routes/oauth';
 import { errorHandler } from './middleware/errorHandler';
 
 // Extraído de index.ts para o app Express poder ser importado sem abrir
@@ -39,11 +39,11 @@ app.use('/companies', companiesRouter);
 app.use('/webhooks', webhooksRouter);
 app.use('/admin', adminRouter);
 // Canal WEB/API — sistemas externos (ex.: cardápio online) usam essas
-// rotas via client_id/client_secret pra iniciar e concluir um
-// compartilhamento sem precisar do app/NFC/QR. Reaproveita o mesmo núcleo
-// de usuário/empresa/consentimento dos demais canais — ver
-// src/lib/compartilhamento.ts.
-app.use('/integrations', integrationsRouter);
+// rotas OAuth2 (authorization_code) via client_id/client_secret pra
+// iniciar e concluir um compartilhamento sem precisar do app/NFC/QR.
+// Reaproveita o mesmo núcleo de usuário/empresa/consentimento dos demais
+// canais — ver src/lib/compartilhamento.ts.
+app.use('/oauth', oauthRouter);
 
 // Precisa ser o último app.use(): captura qualquer erro repassado por
 // asyncHandler ou por middlewares síncronos, em qualquer rota acima.

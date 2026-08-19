@@ -30,7 +30,7 @@ interface ResolverAprovacaoResultado {
 /**
  * Núcleo comum de "usuário decide sobre uma solicitação pendente" —
  * extraído de POST /customer/share para ser reaproveitado também por
- * POST /integrations/authorize/:requestId (canal WEB/API). Os dois fluxos
+ * POST /oauth/authorize/:requestId (canal WEB/API). Os dois fluxos
  * compartilham tudo até aqui: validar ownership/status, filtrar
  * camposLiberados pro subconjunto realmente pedido (nunca confiar
  * cegamente no que o cliente manda — é a mesma blindagem que já existia

@@ -68,14 +68,15 @@ enum MetodoIdentificacao {
   WEB_API
 }
 
-// Status de uma Integração (client_id/client_secret do canal Web/API).
-// Separado de "ativa"/"ativo" (usado em Company/Autorizacao) porque aqui o
-// nome precisa deixar claro, no próprio painel, que revogar uma integração
-// derruba imediatamente qualquer authorization_code pendente para ela — não
-// é um soft-delete de cadastro, é "essa credencial parou de funcionar".
-enum StatusIntegracao {
-  ATIVA
-  REVOGADA
+// Status de um OAuthClient (client_id/client_secret do canal Web/API,
+// autenticação OAuth2). Separado de "ativa"/"ativo" (usado em
+// Company/Autorizacao) porque aqui o nome precisa deixar claro, no próprio
+// painel, que revogar um client derruba imediatamente qualquer code/token
+// pendente para ele — não é um soft-delete de cadastro, é "essa credencial
+// parou de funcionar".
+enum OAuthClientStatus {
+  ACTIVE
+  REVOKED
 }
 
 // -----------------------------
@@ -190,40 +191,41 @@ model Company {
   autorizacoes      Autorizacao[]
   solicitacoes      SolicitacaoCompartilhamento[]
   logsAcesso        LogAcesso[]
-  integracoes       Integracao[]
+  oauthClients      OAuthClient[]
 
   @@map("companies")
 }
 
 // -----------------------------
-// INTEGRAÇÃO (canal WEB/API — credenciais de um sistema externo, ex.: o
-// cardápio online da empresa). Uma empresa pode ter mais de uma integração
-// (cardápio, ERP, etc.), cada uma com seu próprio client_id/client_secret e
-// redirect URIs cadastradas — propositalmente separado da apiKeyHash usada
-// pelo ERP (companyAuth): a API Key do ERP roda 100% server-to-server e
-// nunca sai do servidor da empresa; um client_secret de integração também
-// nunca deve ir para o navegador, mas o client_id É exposto no fluxo (é o
-// "usuário" do Basic Auth em POST /integrations/*), então tratá-los como a
-// mesma credencial obrigaria a girar a API Key inteira do ERP só porque um
-// site de terceiro precisou de uma credencial nova.
+// OAUTH CLIENT (canal WEB/API — credenciais OAuth2 de um sistema externo,
+// ex.: o cardápio online da empresa). Uma empresa pode ter mais de um
+// client (cardápio, ERP, etc.), cada um com seu próprio client_id/
+// client_secret e redirect URIs cadastradas — propositalmente separado da
+// apiKeyHash usada pelo ERP (companyAuth): a API Key do ERP roda 100%
+// server-to-server e nunca sai do servidor da empresa; um client_secret
+// OAuth também nunca deve ir para o navegador. Neste projeto o client_id
+// também nunca chega a ir pro navegador (ver comentário em routes/oauth.ts)
+// — mais forte que o mínimo exigido pelo OAuth2 "puro", que trata client_id
+// como público.
 // -----------------------------
-model Integracao {
-  id               String           @id @default(uuid())
+model OAuthClient {
+  id               String            @id @default(uuid())
   companyId        String
-  nome             String
-  clientId         String           @unique @default(uuid())
+  name             String
+  clientId         String            @unique @default(uuid())
   clientSecretHash String
   redirectUris     String[]
-  status           StatusIntegracao @default(ATIVA)
-  createdAt        DateTime         @default(now())
-  revogadaEm       DateTime?
+  status           OAuthClientStatus @default(ACTIVE)
+  createdAt        DateTime          @default(now())
+  revokedAt        DateTime?
 
   company      Company                       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   solicitacoes SolicitacaoCompartilhamento[]
-  codigos      AutorizacaoCodigo[]
+  codes        OAuthCode[]
+  tokens       OAuthToken[]
 
   @@index([companyId])
-  @@map("integracoes")
+  @@map("oauth_clients")
 }
 
 // Unidades da empresa (ex: filiais)
@@ -291,20 +293,32 @@ model SolicitacaoCompartilhamento {
   // por CPF/telefone). O canal WEB/API é o único caso em que a solicitação
   // nasce ANTES de sabermos o usuário — o cardápio cria a solicitação, e só
   // quando a pessoa loga no FIXO PASS pra ver a tela de consentimento
-  // (GET /integrations/authorize/:id) é que userId é preenchido. Depois de
+  // (GET /oauth/authorize/:requestId) é que userId é preenchido. Depois de
   // preenchido, nunca mais muda.
   userId        String?
   companyId     String
   unidadeId     String?
-  // Preenchidos apenas para metodo = WEB_API — de qual integração veio o
+  // Preenchidos apenas para metodo = WEB_API — de qual OAuthClient veio o
   // pedido e para qual redirect URI o navegador deve voltar depois de
   // autorizar. NFC/QR nunca preenchem isso (a "volta" deles é o próprio
-  // app, não um redirect HTTP).
+  // app, não um redirect HTTP). Nome da coluna mantido em português
+  // (integracaoId) de propósito: esta tabela é o núcleo compartilhado pelos
+  // três canais, e a menor mudança possível nela minimiza o risco de afetar
+  // NFC/QR — só o FK aponta agora pra oauth_clients em vez de integracoes.
   integracaoId  String?
   redirectUri   String?
   // Finalidade em texto livre, mostrada na tela de consentimento
   // (ex.: "Preenchimento dos dados de entrega"). Opcional — NFC/QR não usam.
   purpose       String?
+  // Opaco, ecoado de volta pro client exatamente como recebido em
+  // POST /oauth/authorize (padrão OAuth2 — nunca inventamos nem
+  // sobrescrevemos o valor do cliente). Se o client não mandar state,
+  // POST /oauth/authorize/:requestId cai no requestId como valor de
+  // correlação (compatibilidade com a integração já existente do cardápio,
+  // que ainda não manda state próprio). Fica aqui (na solicitação) e não no
+  // OAuthCode porque precisa existir ANTES do code — o code só nasce quando
+  // o usuário aprova.
+  state         String?
   metodo        MetodoIdentificacao
   camposPedidos CampoDado[]
   status        StatusSolicitacao   @default(PENDENTE)
@@ -317,20 +331,20 @@ model SolicitacaoCompartilhamento {
   criadaEm      DateTime            @default(now())
   resolvidaEm   DateTime?
 
-  user              User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  company           Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  unidade           Unidade?           @relation(fields: [unidadeId], references: [id])
-  integracao        Integracao?        @relation(fields: [integracaoId], references: [id], onDelete: Cascade)
-  autorizacaoCodigo AutorizacaoCodigo?
+  user       User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company    Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  unidade    Unidade?     @relation(fields: [unidadeId], references: [id])
+  integracao OAuthClient? @relation(fields: [integracaoId], references: [id], onDelete: Cascade)
+  oauthCode  OAuthCode?
 
   @@map("solicitacoes_compartilhamento")
 }
 
 // -----------------------------
-// AUTHORIZATION CODE (canal WEB/API) — o "authorization_code" temporário
-// entregue ao navegador depois que o usuário aprova em
-// POST /integrations/authorize/:requestId, e trocado pelo BACKEND do
-// sistema externo (nunca pelo navegador) em POST /integrations/token.
+// OAUTH CODE (canal WEB/API) — o "authorization_code" temporário entregue
+// ao navegador depois que o usuário aprova em
+// POST /oauth/authorize/:requestId, e trocado pelo BACKEND do sistema
+// externo (nunca pelo navegador) em POST /oauth/token.
 //
 // Guardamos só o HASH (sha256) do código, indexado — o mesmo padrão já
 // usado para resetPasswordTokenHash em Company (ver companies.ts), e
@@ -339,28 +353,61 @@ model SolicitacaoCompartilhamento {
 // os códigos se acumulam (um por tentativa de autorização) e o lookup
 // precisa continuar O(1) mesmo depois de meses em produção.
 //
-// usadoEm marca consumo (proteção contra replay); a troca em POST
-// /integrations/token usa um update condicional (WHERE usadoEm IS NULL)
-// para o "uso único" valer mesmo sob duas requisições concorrentes.
+// usedAt marca consumo (proteção contra replay); a troca em POST
+// /oauth/token usa um update condicional (WHERE usedAt IS NULL) para o
+// "uso único" valer mesmo sob duas requisições concorrentes.
 // -----------------------------
-model AutorizacaoCodigo {
-  id              String      @id @default(uuid())
-  codigoHash      String      @unique
-  solicitacaoId   String      @unique
-  integracaoId    String
-  companyId       String
-  userId          String
-  camposLiberados CampoDado[]
-  redirectUri     String
-  expiraEm        DateTime
-  usadoEm         DateTime?
-  createdAt       DateTime    @default(now())
+model OAuthCode {
+  id            String      @id @default(uuid())
+  codeHash      String      @unique
+  requestId     String      @unique
+  oauthClientId String
+  companyId     String
+  userId        String
+  scopes        CampoDado[]
+  redirectUri   String
+  expiresAt     DateTime
+  usedAt        DateTime?
+  createdAt     DateTime    @default(now())
 
-  solicitacao SolicitacaoCompartilhamento @relation(fields: [solicitacaoId], references: [id], onDelete: Cascade)
-  integracao  Integracao                  @relation(fields: [integracaoId], references: [id], onDelete: Cascade)
+  request     SolicitacaoCompartilhamento @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  oauthClient OAuthClient                 @relation(fields: [oauthClientId], references: [id], onDelete: Cascade)
+  token       OAuthToken?
 
-  @@index([integracaoId])
-  @@map("autorizacao_codigos")
+  @@index([oauthClientId])
+  @@map("oauth_codes")
+}
+
+// -----------------------------
+// OAUTH TOKEN (canal WEB/API) — access_token emitido na troca do code em
+// POST /oauth/token (Bearer, curta duração — ver ACCESS_TOKEN_TTL_MS em
+// lib/oauthToken.ts). Diferente do code (uso único), o token é reutilizável
+// dentro da validade: o backend do sistema externo pode chamar
+// GET /oauth/userinfo mais de uma vez com o mesmo token, sem precisar de um
+// novo consentimento a cada chamada — essa é a diferença real entre "canal
+// Web/API" e "SSO de verdade" que motivou esta tabela existir.
+//
+// Só o hash (sha256) é persistido, mesmo padrão do OAuthCode. revokedAt
+// existe para permitir revogação futura (ainda sem endpoint dedicado nesta
+// entrega) sem precisar de mais uma migration depois.
+// -----------------------------
+model OAuthToken {
+  id            String      @id @default(uuid())
+  tokenHash     String      @unique
+  oauthClientId String
+  oauthCodeId   String      @unique
+  companyId     String
+  userId        String
+  scopes        CampoDado[]
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  createdAt     DateTime    @default(now())
+
+  oauthClient OAuthClient @relation(fields: [oauthClientId], references: [id], onDelete: Cascade)
+  oauthCode   OAuthCode   @relation(fields: [oauthCodeId], references: [id], onDelete: Cascade)
+
+  @@index([oauthClientId])
+  @@map("oauth_tokens")
 }
 
 // -----------------------------

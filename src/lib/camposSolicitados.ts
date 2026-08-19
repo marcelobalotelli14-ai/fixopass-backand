@@ -7,7 +7,7 @@ import { prisma } from './prisma';
  * nada, cai de volta para NOME + TELEFONE como padrão mínimo seguro.
  *
  * Extraído de routes/auth.ts para ser reaproveitado também por
- * routes/integrations.ts (canal WEB/API) — os dois precisam do mesmo
+ * routes/oauth.ts (canal WEB/API) — os dois precisam do mesmo
  * "teto" de campos que uma empresa pode pedir, seja o pedido vindo do app
  * lendo NFC/QR ou de uma integração de terceiro.
  */

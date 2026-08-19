@@ -12,9 +12,9 @@ export const AUTHORIZATION_REQUEST_TTL_MS = 10 * 60 * 1000; // 10 minutos
  * string) e devolve também o hash (sha256) que efetivamente vai pro banco.
  *
  * O valor em texto puro só existe neste retorno e na resposta HTTP de
- * POST /integrations/authorize/:requestId — nunca é persistido, só o hash
- * (mesmo motivo do resetPasswordTokenHash em companies.ts: um vazamento do
- * banco não deve permitir reconstruir authorization_codes válidos).
+ * POST /oauth/authorize/:requestId — nunca é persistido, só o hash (mesmo
+ * motivo do resetPasswordTokenHash em companies.ts: um vazamento do banco
+ * não deve permitir reconstruir authorization_codes válidos).
  */
 export function gerarAuthorizationCode(): { codigo: string; codigoHash: string } {
   const codigo = crypto.randomBytes(32).toString('base64url');
