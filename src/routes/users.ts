@@ -6,6 +6,7 @@ import { userAuth } from '../middleware/userAuth';
 import { asyncHandler } from '../lib/asyncHandler';
 import { uploadFoto } from '../lib/upload';
 import { cloudinary } from '../lib/cloudinary';
+import { senhaConfere } from '../lib/senha';
 
 const router = Router();
 
@@ -77,6 +78,10 @@ const loginSchema = z.object({
  * POST /users/login
  * MVP: retorna o userId a ser usado no header X-USER-ID nas próximas chamadas.
  * Trocar por emissão de JWT assim que o app mobile tiver fluxo de sessão real.
+ *
+ * senhaConfere (ver lib/senha.ts) sempre roda o bcrypt.compare — mesmo
+ * quando `user` é null — pra não vazar por timing se o e-mail existe ou não
+ * no banco (mitigação de timing attack).
  */
 router.post(
   '/login',
@@ -87,7 +92,8 @@ router.post(
     }
 
     const user = await prisma.user.findUnique({ where: { email: parsed.data.email } });
-    if (!user || !(await bcrypt.compare(parsed.data.senha, user.senhaHash))) {
+    const senhaOk = await senhaConfere(parsed.data.senha, user?.senhaHash);
+    if (!user || !senhaOk) {
       return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
     }
 

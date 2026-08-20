@@ -4,6 +4,11 @@ import { prisma } from '../lib/prisma';
 import { asyncHandler } from '../lib/asyncHandler';
 import { MENSALIDADE_DIAS, diasEmMs } from '../lib/assinatura';
 import { consultarPagamento, MercadoPagoNaoConfiguradoError } from '../lib/mercadopago';
+import {
+  consultarPagamento as consultarPagamentoAsaas,
+  pagamentoAsaasFoiConfirmado,
+  AsaasNaoConfiguradoError,
+} from '../lib/asaas';
 
 const router = Router();
 
@@ -147,6 +152,104 @@ router.post(
     // uma vez — sem essa checagem, cada reenvio somaria +30 dias de novo.
     if (company.ultimoPagamentoIdProcessado === statusPagamento.paymentId) {
       return res.status(200).json({ status: 'approved', aplicado: false, motivo: 'já processado' });
+    }
+
+    const base = company.nextDueDate && company.nextDueDate.getTime() > Date.now() ? company.nextDueDate : new Date();
+    const nextDueDate = new Date(base.getTime() + diasEmMs(MENSALIDADE_DIAS));
+
+    const atualizada = await prisma.company.update({
+      where: { id: company.id },
+      data: {
+        status: 'ACTIVE',
+        nextDueDate,
+        trialEndsAt: null,
+        ultimoPagamentoIdProcessado: statusPagamento.paymentId,
+      },
+    });
+
+    return res.status(200).json({
+      companyId: atualizada.id,
+      status: atualizada.status,
+      nextDueDate: atualizada.nextDueDate,
+      aplicado: true,
+    });
+  })
+);
+
+/**
+ * POST /webhooks/asaas
+ * Notificação REAL do Asaas (configurada em Integrações > Webhooks, no
+ * painel do Asaas) — confirmação de pagamento PIX criado em
+ * POST /companies/me/pix. Escuta os eventos `PAYMENT_RECEIVED` (PIX/dinheiro
+ * — o principal aqui) e `PAYMENT_CONFIRMED` (outros meios); qualquer outro
+ * evento é apenas confirmado com 200 e ignorado.
+ *
+ * SEGURANÇA — duas camadas:
+ *  1) Autenticação do webhook: o Asaas manda o "Token de autenticação" que
+ *     você configurar no painel de volta no header `asaas-access-token` —
+ *     comparamos contra ASAAS_WEBHOOK_TOKEN (segredo compartilhado). Sem essa
+ *     env var configurada, a rota recusa tudo com 503 (fail closed).
+ *  2) Mesmo com o token batendo, não confiamos no conteúdo da notificação:
+ *     assim que recebe o aviso, esta rota CONSULTA o pagamento de verdade na
+ *     API do Asaas (GET /v3/payments/:id) usando nossa própria
+ *     ASAAS_API_KEY — só essa consulta decide se o pagamento foi mesmo
+ *     recebido, então não dá pra forjar uma ativação só mandando um POST com
+ *     um payload inventado (mesmo padrão já usado em POST /webhooks/mercadopago).
+ * https://docs.asaas.com/docs/webhook-de-cobrancas
+ *
+ * Sem ASAAS_API_KEY configurado, recusa com 503 (fail closed) — sem a
+ * credencial não dá nem pra confirmar se o pagamento é real.
+ */
+router.post(
+  '/asaas',
+  asyncHandler(async (req, res) => {
+    const tokenEsperado = process.env.ASAAS_WEBHOOK_TOKEN;
+    if (!tokenEsperado) {
+      return res.status(503).json({ error: 'Webhook do Asaas não configurado (ASAAS_WEBHOOK_TOKEN ausente no servidor).' });
+    }
+    if (req.header('asaas-access-token') !== tokenEsperado) {
+      return res.status(401).json({ error: 'Token do webhook inválido.' });
+    }
+
+    const evento = req.body?.event;
+    const paymentId = req.body?.payment?.id;
+
+    // O Asaas manda outros eventos (PAYMENT_CREATED, PAYMENT_OVERDUE,
+    // PAYMENT_DELETED...) que não nos interessam aqui — só respondemos 200 e
+    // ignoramos, pra ele não ficar reenviando à toa.
+    if ((evento !== 'PAYMENT_RECEIVED' && evento !== 'PAYMENT_CONFIRMED') || !paymentId) {
+      return res.status(200).json({ ignorado: true });
+    }
+
+    let statusPagamento;
+    try {
+      statusPagamento = await consultarPagamentoAsaas(String(paymentId));
+    } catch (err) {
+      if (err instanceof AsaasNaoConfiguradoError) {
+        return res.status(503).json({ error: err.message });
+      }
+      throw err;
+    }
+
+    if (!statusPagamento.companyId) {
+      return res.status(200).json({ aviso: 'Pagamento sem externalReference — não sei a qual empresa pertence.' });
+    }
+
+    if (!pagamentoAsaasFoiConfirmado(statusPagamento.status)) {
+      // Pendente, vencido, estornado... nada a fazer ainda; o Asaas manda
+      // uma nova notificação quando o status mudar de verdade.
+      return res.status(200).json({ status: statusPagamento.status, aplicado: false });
+    }
+
+    const company = await prisma.company.findUnique({ where: { id: statusPagamento.companyId } });
+    if (!company) {
+      return res.status(200).json({ aviso: 'Empresa do externalReference não encontrada.' });
+    }
+
+    // Idempotência: o Asaas pode reenviar a mesma notificação mais de uma
+    // vez — sem essa checagem, cada reenvio somaria +30 dias de novo.
+    if (company.ultimoPagamentoIdProcessado === statusPagamento.paymentId) {
+      return res.status(200).json({ status: statusPagamento.status, aplicado: false, motivo: 'já processado' });
     }
 
     const base = company.nextDueDate && company.nextDueDate.getTime() > Date.now() ? company.nextDueDate : new Date();
