@@ -13,7 +13,7 @@ import { cloudinary } from '../lib/cloudinary';
 import { enviarEmailRecuperacaoSenha } from '../lib/email';
 import { montarPayloadDados } from '../lib/dadosCompartilhados';
 import { TRIAL_DIAS, PRECO_PADRAO_CENTAVOS, calcularDaysLeftInTrial, diasEmMs } from '../lib/assinatura';
-import { criarCobrancaPix, MercadoPagoNaoConfiguradoError } from '../lib/mercadopago';
+import { criarCobrancaPix, AsaasNaoConfiguradoError } from '../lib/asaas';
 
 const router = Router();
 
@@ -539,16 +539,16 @@ router.post(
 
 /**
  * POST /companies/me/pix
- * Gera uma cobrança PIX REAL (Mercado Pago) pra renovar a mensalidade da
+ * Gera uma cobrança PIX REAL (Asaas, API v3) pra renovar a mensalidade da
  * empresa logada — usada pela tela de checkout quando o trial/assinatura
  * expira, mas também disponível a qualquer momento pra quem quiser renovar
  * antecipado. Devolve o QR Code (imagem base64) e o código "copia e cola".
  *
- * A confirmação de pagamento chega depois via POST /webhooks/mercadopago —
- * esta rota só CRIA a cobrança, não ativa nada sozinha.
+ * A confirmação de pagamento chega depois via POST /webhooks/asaas — esta
+ * rota só CRIA a cobrança, não ativa nada sozinha.
  *
- * Sem MERCADOPAGO_ACCESS_TOKEN configurado no servidor, devolve 503 (fail
- * closed) em vez de inventar um QR Code que não seria pago de verdade.
+ * Sem ASAAS_API_KEY configurado no servidor, devolve 503 (fail closed) em
+ * vez de inventar um QR Code que não seria pago de verdade.
  */
 router.post(
   '/me/pix',
@@ -563,7 +563,7 @@ router.post(
       const cobranca = await criarCobrancaPix(company);
       return res.status(201).json(cobranca);
     } catch (err) {
-      if (err instanceof MercadoPagoNaoConfiguradoError) {
+      if (err instanceof AsaasNaoConfiguradoError) {
         return res.status(503).json({ error: err.message });
       }
       throw err;

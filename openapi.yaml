@@ -38,6 +38,11 @@ components:
       in: header
       name: X-WEBHOOK-SECRET
       description: Segredo compartilhado do webhook de pagamento (variável de ambiente PAYMENT_WEBHOOK_SECRET) — NÃO é verificação de assinatura oficial do gateway, ver comentário em src/routes/webhooks.ts.
+    AsaasWebhookToken:
+      type: apiKey
+      in: header
+      name: asaas-access-token
+      description: Token de autenticação do webhook configurado no painel do Asaas (variável de ambiente ASAAS_WEBHOOK_TOKEN). A rota ainda reconsulta o pagamento na API do Asaas antes de ativar a empresa, ver comentário em src/routes/webhooks.ts.
     OAuthClientBasicAuth:
       type: http
       scheme: basic
@@ -537,11 +542,11 @@ paths:
 
   /companies/me/pix:
     post:
-      summary: Gera uma cobrança PIX real (Mercado Pago) para renovar a mensalidade da empresa logada
+      summary: Gera uma cobrança PIX real (Asaas, API v3) para renovar a mensalidade da empresa logada
       description: >
-        Cria a cobrança de verdade na API do Mercado Pago (não é um mock) —
+        Cria a cobrança de verdade na API v3 do Asaas (não é um mock) —
         devolve o QR Code (imagem) e o código "copia e cola" pra pagar. A
-        confirmação chega depois via POST /webhooks/mercadopago; esta rota só
+        confirmação chega depois via POST /webhooks/asaas; esta rota só
         cria a cobrança, não ativa a empresa sozinha.
       security: [{ CompanyPanelSession: [] }]
       responses:
@@ -559,7 +564,7 @@ paths:
                   valorCentavos: { type: integer }
                   expiraEm: { type: string, format: date-time }
         '404': { description: Empresa não encontrada }
-        '503': { description: MERCADOPAGO_ACCESS_TOKEN não configurado no servidor }
+        '503': { description: ASAAS_API_KEY não configurado no servidor }
 
   /companies/me/compartilhamentos:
     get:
@@ -1016,6 +1021,38 @@ paths:
         '200': { description: "Notificação processada (pode ou não ter resultado em ativação — ver campo 'aplicado' no corpo)" }
         '503': { description: MERCADOPAGO_ACCESS_TOKEN não configurado no servidor }
 
+  /webhooks/asaas:
+    post:
+      summary: Notificação real do Asaas confirmando um pagamento PIX criado em POST /companies/me/pix
+      description: >
+        Exige o header `asaas-access-token` batendo com ASAAS_WEBHOOK_TOKEN
+        (configurado também no painel do Asaas). Além disso, não confia no
+        corpo da notificação — ao receber, consulta o pagamento de verdade
+        na API do Asaas (GET /v3/payments/:id) usando o ASAAS_API_KEY do
+        próprio servidor antes de ativar qualquer coisa. Escuta os eventos
+        PAYMENT_RECEIVED e PAYMENT_CONFIRMED; qualquer outro evento é só
+        confirmado com 200 e ignorado. Idempotente: reenvios da mesma
+        notificação não somam dias duas vezes.
+      security:
+        - AsaasWebhookToken: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                event: { type: string, example: PAYMENT_RECEIVED }
+                payment:
+                  type: object
+                  properties:
+                    id: { type: string }
+              additionalProperties: true
+      responses:
+        '200': { description: "Notificação processada (pode ou não ter resultado em ativação — ver campo 'aplicado' no corpo)" }
+        '401': { description: Token do webhook inválido }
+        '503': { description: ASAAS_WEBHOOK_TOKEN ou ASAAS_API_KEY não configurado no servidor }
+
   /admin/companies:
     get:
       summary: "Super Admin: lista todas as empresas (inclusive encerradas) com status de assinatura, dias de trial e preço"
@@ -1070,3 +1107,38 @@ paths:
         - AdminSecret: []
       responses:
         '200': { description: Métricas agregadas }
+
+  /admin/dados-teste:
+    get:
+      summary: "Super Admin: preview (não apaga nada) dos cadastros de empresa/usuário identificados como FAKE/TESTE"
+      description: >
+        Heurística por nome/e-mail/CNPJ/CPF (ver src/lib/limpezaDados.ts) —
+        não é uma flag confiável no banco. A conta configurada em
+        ADMIN_MASTER_EMAIL/ADMIN_MASTER_CPF nunca aparece aqui.
+      security:
+        - AdminSecret: []
+      responses:
+        '200': { description: "Lista de candidatos (companies e users), com o motivo de cada um ter sido identificado" }
+    delete:
+      summary: "Super Admin: apaga definitivamente os ids de empresa/usuário informados (hard delete, mantém o Admin Master)"
+      description: >
+        Fluxo esperado: GET /admin/dados-teste, revisar a lista, então DELETE
+        com os ids escolhidos + confirmar:true. Reconfirma cada id contra a
+        heurística no momento da chamada e nunca apaga a conta do Admin
+        Master, mesmo que o id dela venha no corpo.
+      security:
+        - AdminSecret: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirmar]
+              properties:
+                companyIds: { type: array, items: { type: string, format: uuid } }
+                userIds: { type: array, items: { type: string, format: uuid } }
+                confirmar: { type: boolean, enum: [true], description: "Obrigatório — confirmação explícita da exclusão definitiva" }
+      responses:
+        '200': { description: "Contagem apagada e ids ignorados (não batiam mais na heurística, ou eram o Admin Master)" }
+        '400': { description: Dados inválidos (nenhum id informado, ou confirmar ausente) }

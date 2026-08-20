@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma';
 import { isAdmin } from '../middleware/isAdmin';
 import { asyncHandler } from '../lib/asyncHandler';
 import { calcularDaysLeftInTrial, diasEmMs, PRECO_PADRAO_CENTAVOS } from '../lib/assinatura';
+import { listarCandidatosLimpeza, apagarCandidatosLimpeza } from '../lib/limpezaDados';
 
 const router = Router();
 router.use(isAdmin);
@@ -177,6 +178,70 @@ router.get(
       faturamentoEstimadoCentavos,
       volumePareamentos: somaPareamentos._sum.accessCount ?? 0,
     });
+  })
+);
+
+/**
+ * GET /admin/dados-teste
+ * Preview (NÃO apaga nada) dos cadastros de empresa e usuário que a
+ * heurística de src/lib/limpezaDados.ts identifica como FAKE/TESTE — os
+ * mesmos dados plantados por prisma/seed.ts, mais qualquer nome/e-mail/cnpj
+ * com cara de teste (domínios como example.com, palavras "teste"/"fake"/
+ * "demo"/...). A conta configurada em ADMIN_MASTER_EMAIL/ADMIN_MASTER_CPF
+ * nunca aparece aqui, mesmo que bata na heurística.
+ *
+ * SEMPRE confira esta lista manualmente antes de chamar
+ * DELETE /admin/dados-teste com os ids — é uma heurística por
+ * nome/e-mail/CNPJ/CPF, não uma flag confiável no banco.
+ */
+router.get(
+  '/dados-teste',
+  asyncHandler(async (_req, res) => {
+    const candidatos = await listarCandidatosLimpeza();
+    return res.status(200).json({
+      total: candidatos.length,
+      companies: candidatos.filter((c) => c.tipo === 'company'),
+      users: candidatos.filter((c) => c.tipo === 'user'),
+    });
+  })
+);
+
+const limpezaSchema = z
+  .object({
+    companyIds: z.array(z.string().uuid()).default([]),
+    userIds: z.array(z.string().uuid()).default([]),
+    // Mensagem de "Valor inválido, esperado true" já sai traduzida pelo
+    // errorMap global (ver src/lib/zodErrorMap.ts) — não precisa de mensagem
+    // customizada aqui.
+    confirmar: z.literal(true),
+  })
+  .refine((d) => d.companyIds.length > 0 || d.userIds.length > 0, {
+    message: 'Informe ao menos um id em companyIds ou userIds (use GET /admin/dados-teste pra obtê-los).',
+  });
+
+/**
+ * DELETE /admin/dados-teste
+ * Apaga DEFINITIVAMENTE (hard delete, não é o soft-delete de
+ * DELETE /companies/me) as empresas/usuários cujos ids vierem em
+ * companyIds/userIds — nunca a conta do Admin Master, e nunca um id que não
+ * bata (de novo, no momento desta chamada) na heurística de
+ * src/lib/limpezaDados.ts, mesmo que ele apareça no corpo da requisição.
+ * `confirmar: true` é obrigatório, exatamente pra evitar apagar por engano
+ * ao testar a rota.
+ *
+ * Fluxo esperado: 1) GET /admin/dados-teste, 2) revisar a lista, 3) DELETE
+ * com os ids escolhidos + confirmar:true.
+ */
+router.delete(
+  '/dados-teste',
+  asyncHandler(async (req, res) => {
+    const parsed = limpezaSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+    }
+
+    const resultado = await apagarCandidatosLimpeza(parsed.data.companyIds, parsed.data.userIds);
+    return res.status(200).json(resultado);
   })
 );
 
