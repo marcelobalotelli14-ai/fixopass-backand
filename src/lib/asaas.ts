@@ -31,6 +31,25 @@ function getApiKey(): string {
   return key;
 }
 
+/**
+ * Pagamento consultado não existe na conta Asaas (HTTP 404) — diferente de
+ * uma falha de rede/instabilidade da API, que é passageira e vale a pena o
+ * Asaas reenviar depois. Um paymentId inexistente NUNCA vai passar a
+ * existir só porque o Asaas reenviou a mesma notificação de novo (é o caso,
+ * por exemplo, do teste de conectividade que o próprio painel do Asaas
+ * dispara ao ativar/salvar um webhook, com um paymentId fictício) — então a
+ * rota trata isso como "nada a fazer" (200) em vez de erro (500), pra não
+ * fazer o Asaas achar que o endpoint está quebrado e suspender o webhook
+ * (status "Interrompido") por causa de um teste que nunca teria como dar
+ * certo.
+ */
+export class PagamentoAsaasNaoEncontradoError extends Error {
+  constructor(paymentId: string) {
+    super(`Pagamento ${paymentId} não encontrado na conta Asaas.`);
+    this.name = 'PagamentoAsaasNaoEncontradoError';
+  }
+}
+
 function headersAsaas(apiKey: string): Record<string, string> {
   // O Asaas autentica pelo header `access_token` (não é Bearer) — vale tanto
   // pra chave de produção quanto de sandbox.
@@ -171,6 +190,9 @@ export async function consultarPagamento(paymentId: string): Promise<StatusPagam
   });
   const corpo: any = await resposta.json();
 
+  if (resposta.status === 404) {
+    throw new PagamentoAsaasNaoEncontradoError(paymentId);
+  }
   if (!resposta.ok) {
     throw new Error(`Asaas recusou a consulta do pagamento ${paymentId} (HTTP ${resposta.status}): ${JSON.stringify(corpo)}`);
   }

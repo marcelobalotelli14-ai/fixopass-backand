@@ -8,6 +8,7 @@ import {
   consultarPagamento as consultarPagamentoAsaas,
   pagamentoAsaasFoiConfirmado,
   AsaasNaoConfiguradoError,
+  PagamentoAsaasNaoEncontradoError,
 } from '../lib/asaas';
 
 const router = Router();
@@ -200,6 +201,17 @@ router.post(
  * Sem ASAAS_API_KEY configurado, recusa com 503 (fail closed) — sem a
  * credencial não dá nem pra confirmar se o pagamento é real.
  */
+
+/**
+ * GET /webhooks/asaas
+ * Não é chamado pelo Asaas de verdade (ele só faz POST) — existe só pra um
+ * teste de conectividade (curl, painel do provedor, etc.) confirmar que a
+ * URL existe e responde, sem precisar de token nem tocar em nada. Método
+ * GET não tem efeito colateral, então não tem risco de segurança em deixar
+ * sem autenticação — é só um "sim, este endpoint existe".
+ */
+router.get('/asaas', (_req, res) => res.status(200).json({ status: 'ok' }));
+
 router.post(
   '/asaas',
   asyncHandler(async (req, res) => {
@@ -227,6 +239,17 @@ router.post(
     } catch (err) {
       if (err instanceof AsaasNaoConfiguradoError) {
         return res.status(503).json({ error: err.message });
+      }
+      // paymentId não existe na conta Asaas — nunca vai passar a existir só
+      // porque o Asaas reenvia a mesma notificação (ex.: teste de
+      // conectividade do painel, com um id fictício). Responder 200 aqui
+      // evita que isso seja lido como "endpoint quebrado" e suspenda o
+      // webhook de verdade (status "Interrompido"); outras falhas (rede,
+      // instabilidade da API do Asaas) continuam virando 500 pra ele tentar
+      // reenviar depois.
+      if (err instanceof PagamentoAsaasNaoEncontradoError) {
+        console.warn('[webhooks/asaas]', err.message);
+        return res.status(200).json({ ignorado: true, aviso: err.message });
       }
       throw err;
     }
