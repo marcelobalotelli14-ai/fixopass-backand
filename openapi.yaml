@@ -948,7 +948,15 @@ paths:
                 properties:
                   data:
                     type: object
-                    description: Chaves em minúsculo (nome, telefone, endereco...), só as autorizadas.
+                    description: >
+                      Chaves em minúsculo (nome, telefone, endereco...), só as
+                      autorizadas. Quando ENDERECO é autorizado e a pessoa
+                      preencheu o endereço estruturado (não só o texto livre
+                      antigo do app), vêm também enderecoLogradouro,
+                      enderecoNumero, enderecoComplemento, enderecoBairro,
+                      enderecoCidade, enderecoEstado e enderecoCep (cada um
+                      string ou null) — além de `endereco`, que continua sendo
+                      a versão formatada em uma linha só.
                   scope:
                     type: string
         '401':

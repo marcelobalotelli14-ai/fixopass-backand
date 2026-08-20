@@ -25,6 +25,15 @@ function formatarEndereco(user: any): string | null {
  * GET /companies/me/compartilhamentos (histórico visível no painel da
  * empresa) — os dois lugares precisam resolver os mesmos campos pros
  * mesmos valores atuais do usuário, incluindo a foto (FOTO -> fotoUrl).
+ *
+ * ENDERECO continua devolvendo `endereco` (string formatada, compatível com
+ * quem já consome só esse campo) e ADICIONALMENTE os pedaços estruturados
+ * (enderecoLogradouro/Numero/Complemento/Bairro/Cidade/Estado/Cep), quando
+ * a pessoa preencheu o endereço estruturado (Meus dados, na web) — null
+ * quando ela só tem o texto livre antigo do app (formatarEndereco explica
+ * o motivo de nunca ter os dois "cheios" ao mesmo tempo). Puramente
+ * aditivo: quem já lia só `endereco` como string continua funcionando
+ * igual, sem quebra de contrato.
  */
 export function montarPayloadDados(user: any, campos: string[]) {
   const map: Record<string, unknown> = {
@@ -42,6 +51,15 @@ export function montarPayloadDados(user: any, campos: string[]) {
   for (const campo of campos) {
     const chave = campo.toLowerCase();
     payload[chave] = map[campo];
+    if (campo === 'ENDERECO') {
+      payload.enderecoLogradouro = user.enderecoLogradouro ?? null;
+      payload.enderecoNumero = user.enderecoNumero ?? null;
+      payload.enderecoComplemento = user.enderecoComplemento ?? null;
+      payload.enderecoBairro = user.enderecoBairro ?? null;
+      payload.enderecoCidade = user.enderecoCidade ?? null;
+      payload.enderecoEstado = user.enderecoEstado ?? null;
+      payload.enderecoCep = user.enderecoCep ?? null;
+    }
   }
   return payload;
 }
