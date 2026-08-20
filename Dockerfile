@@ -23,5 +23,10 @@ COPY package*.json ./
 COPY prisma ./prisma
 
 EXPOSE 3000
-# Executa as migrações do banco antes de iniciar a aplicação
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+# Migração do banco NÃO roda mais aqui — é o preDeployCommand do
+# railway.json (npx prisma migrate deploy) que cuida disso antes do deploy
+# trocar de versão. Isso evita que uma falha de conexão/timeout no boot do
+# container derrube a API inteira (o "&&" antigo impedia o node de subir se
+# a migração falhasse) e permite o healthcheck/restart policy do Railway
+# agirem sobre o processo da aplicação de verdade.
+CMD ["node", "dist/index.js"]
