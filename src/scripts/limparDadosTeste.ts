@@ -11,6 +11,13 @@
  * heurística, configure ADMIN_MASTER_EMAIL e/ou ADMIN_MASTER_CPF antes de
  * rodar.
  *
+ * A empresa "Pizzaria Balotelli" é SEMPRE protegida (casada pelo nome, ver
+ * EMPRESA_PROTEGIDA_NOME em src/lib/limpezaDados.ts) — não precisa de env
+ * var pra isso. Se quiser reforçar por CNPJ/e-mail, ou proteger o usuário
+ * dono dela (caso não seja a mesma pessoa do Admin Master), configure
+ * também EMPRESA_PROTEGIDA_CNPJ, EMPRESA_PROTEGIDA_EMAIL,
+ * USUARIO_PROTEGIDO_CPF e/ou USUARIO_PROTEGIDO_EMAIL antes de rodar.
+ *
  * Uso:
  *   npx ts-node src/scripts/limparDadosTeste.ts            # dry-run — só lista, não apaga nada
  *   npx ts-node src/scripts/limparDadosTeste.ts --confirmar # apaga de verdade os listados no dry-run
