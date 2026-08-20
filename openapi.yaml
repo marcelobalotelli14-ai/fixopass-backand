@@ -376,10 +376,10 @@ paths:
     post:
       summary: Inicia o fluxo de "esqueci minha senha" do painel web da empresa
       description: >
-        Sempre responde 200 com uma mensagem genérica, exista ou não o e-mail,
-        para não permitir enumerar e-mails cadastrados. Se a empresa existir,
-        gera um token de redefinição (válido por 1 hora) e "envia" o link
-        (atualmente apenas logado no servidor — MVP sem provedor de e-mail).
+        Sempre responde 200 com uma mensagem genérica, exista ou não o
+        e-mail, para não permitir enumerar e-mails cadastrados. Se a empresa
+        existir, gera um token de redefinição (válido por 1 hora) e envia o
+        link por e-mail de verdade (Resend ou SMTP, ver src/lib/email.ts).
       requestBody:
         required: true
         content:
@@ -392,6 +392,7 @@ paths:
       responses:
         '200': { description: Instruções enviadas (se o e-mail existir) }
         '400': { description: Dados inválidos }
+        '503': { description: Envio de e-mail não configurado no servidor (nem RESEND_API_KEY nem SMTP_*) }
 
   /companies/reset-password:
     post:

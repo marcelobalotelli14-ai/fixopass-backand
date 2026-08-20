@@ -10,7 +10,8 @@ import { companyPanelAuth } from '../middleware/companyPanelAuth';
 import { asyncHandler } from '../lib/asyncHandler';
 import { uploadLogo } from '../lib/upload';
 import { cloudinary } from '../lib/cloudinary';
-import { enviarEmailRecuperacaoSenha } from '../lib/email';
+import { enviarEmailRecuperacaoSenha, emailConfigurado } from '../lib/email';
+import { senhaConfere } from '../lib/senha';
 import { montarPayloadDados } from '../lib/dadosCompartilhados';
 import { TRIAL_DIAS, PRECO_PADRAO_CENTAVOS, calcularDaysLeftInTrial, diasEmMs } from '../lib/assinatura';
 import { criarCobrancaPix, AsaasNaoConfiguradoError } from '../lib/asaas';
@@ -84,6 +85,10 @@ const loginSchema = z.object({
  * POST /companies/login
  * MVP: login do painel web (diferente da API Key usada pelo ERP).
  * Retorna o companyId a ser usado no header X-COMPANY-ID.
+ *
+ * senhaConfere (ver lib/senha.ts) sempre roda o bcrypt.compare — mesmo
+ * quando `company` é null — pra não vazar por timing se o e-mail existe ou
+ * não no banco (mitigação de timing attack).
  */
 router.post(
   '/login',
@@ -94,7 +99,8 @@ router.post(
     }
 
     const company = await prisma.company.findUnique({ where: { emailContato: parsed.data.emailContato } });
-    if (!company || !(await bcrypt.compare(parsed.data.senha, company.senhaHash))) {
+    const senhaOk = await senhaConfere(parsed.data.senha, company?.senhaHash);
+    if (!company || !senhaOk) {
       return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
     }
     if (!company.ativa) {
@@ -468,10 +474,24 @@ const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hora
  * Inicia o fluxo de "esqueci minha senha" do painel web da empresa.
  * Sempre responde com a mesma mensagem genérica, exista ou não o e-mail,
  * para não permitir enumerar e-mails cadastrados por tentativa e erro.
+ *
+ * Sem RESEND_API_KEY nem SMTP_* configurado no servidor, recusa com 503
+ * (fail closed) ANTES de sequer consultar o banco — checar a configuração
+ * primeiro (em vez de só dentro do `if (company)`) garante que a resposta
+ * não varia dependendo de o e-mail existir ou não.
+ *
+ * Se o e-mail existe mas o ENVIO em si falhar por algum motivo transitório
+ * (provedor fora do ar, credencial errada), a falha só é logada no servidor
+ * — a resposta ao cliente continua a mesma mensagem genérica de sempre, pra
+ * não abrir esse mesmo tipo de diferença observável.
  */
 router.post(
   '/forgot-password',
   asyncHandler(async (req, res) => {
+    if (!emailConfigurado()) {
+      return res.status(503).json({ error: 'Recuperação de senha por e-mail não está configurada no servidor.' });
+    }
+
     const parsed = forgotPasswordSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
@@ -492,7 +512,14 @@ router.post(
       });
 
       const linkReset = `${process.env.PANEL_URL || 'https://painel.fixopass.com'}/redefinir-senha?token=${tokenPlaintext}`;
-      await enviarEmailRecuperacaoSenha(company.emailContato, linkReset);
+      try {
+        await enviarEmailRecuperacaoSenha(company.emailContato, linkReset);
+      } catch (err) {
+        // Não propaga: um provedor de e-mail fora do ar não pode virar um
+        // 500 só quando o e-mail existe (isso já seria, de novo, uma forma
+        // de enumerar e-mails cadastrados pela resposta).
+        console.error(`Falha ao enviar e-mail de recuperação de senha para ${company.emailContato}:`, err);
+      }
     }
 
     return res.status(200).json({
