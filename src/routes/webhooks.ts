@@ -220,11 +220,18 @@ router.post(
       return res.status(503).json({ error: 'Webhook do Asaas não configurado (ASAAS_WEBHOOK_TOKEN ausente no servidor).' });
     }
     if (req.header('asaas-access-token') !== tokenEsperado) {
+      console.warn('[webhooks/asaas] token invalido recebido');
       return res.status(401).json({ error: 'Token do webhook inválido.' });
     }
 
     const evento = req.body?.event;
     const paymentId = req.body?.payment?.id;
+
+    // Log de toda notificação recebida (token já validado) — não loga o
+    // payload inteiro nem o token, só o essencial pra conseguir confirmar
+    // nos logs do Railway que o Asaas está de fato chamando essa rota e com
+    // qual evento, sem precisar acessar o banco.
+    console.log(`[webhooks/asaas] evento=${evento ?? '(nenhum)'} paymentId=${paymentId ?? '(nenhum)'}`);
 
     // O Asaas manda outros eventos (PAYMENT_CREATED, PAYMENT_OVERDUE,
     // PAYMENT_DELETED...) que não nos interessam aqui — só respondemos 200 e
