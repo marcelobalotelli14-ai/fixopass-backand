@@ -182,8 +182,11 @@ router.post(
  * Notificação REAL do Asaas (configurada em Integrações > Webhooks, no
  * painel do Asaas) — confirmação de pagamento PIX criado em
  * POST /companies/me/pix. Escuta os eventos `PAYMENT_RECEIVED` (PIX/dinheiro
- * — o principal aqui) e `PAYMENT_CONFIRMED` (outros meios); qualquer outro
- * evento é apenas confirmado com 200 e ignorado.
+ * — o principal aqui) e `PAYMENT_CONFIRMED` (outros meios) pra ativar a
+ * empresa, e `PAYMENT_REFUNDED` / `PAYMENT_CHARGEBACK_REQUESTED` /
+ * `PAYMENT_CHARGEBACK_DISPUTE` pra bloqueá-la de volta caso o pagamento que
+ * a ativou seja estornado/contestado depois; qualquer outro evento é apenas
+ * confirmado com 200 e ignorado.
  *
  * SEGURANÇA — duas camadas:
  *  1) Autenticação do webhook: o Asaas manda o "Token de autenticação" que
@@ -200,6 +203,15 @@ router.post(
  *
  * Sem ASAAS_API_KEY configurado, recusa com 503 (fail closed) — sem a
  * credencial não dá nem pra confirmar se o pagamento é real.
+ *
+ * IDEMPOTÊNCIA ATÔMICA: tanto a ativação quanto o bloqueio por estorno usam
+ * `updateMany` com a condição de "ainda não processei esse paymentId" dentro
+ * do próprio WHERE, e checam `count` depois — em vez de ler o estado com
+ * `findUnique`, decidir em JS, e só depois escrever. Isso fecha uma corrida:
+ * duas notificações iguais chegando em paralelo (reenvio natural do Asaas)
+ * não conseguem mais aplicar o efeito (soma de dias / bloqueio) duas vezes,
+ * porque a segunda `updateMany` já não encontra mais nenhuma linha que bata
+ * com a condição (a primeira já alterou `ultimoPagamentoIdProcessado`).
  */
 
 /**
@@ -233,10 +245,15 @@ router.post(
     // qual evento, sem precisar acessar o banco.
     console.log(`[webhooks/asaas] evento=${evento ?? '(nenhum)'} paymentId=${paymentId ?? '(nenhum)'}`);
 
-    // O Asaas manda outros eventos (PAYMENT_CREATED, PAYMENT_OVERDUE,
-    // PAYMENT_DELETED...) que não nos interessam aqui — só respondemos 200 e
-    // ignoramos, pra ele não ficar reenviando à toa.
-    if ((evento !== 'PAYMENT_RECEIVED' && evento !== 'PAYMENT_CONFIRMED') || !paymentId) {
+    // Eventos que ativam a empresa (pagamento confirmado) e eventos que
+    // revertem essa ativação (estorno/contestação). Qualquer outro evento
+    // (PAYMENT_CREATED, PAYMENT_OVERDUE, PAYMENT_DELETED...) não nos
+    // interessa aqui — só respondemos 200 e ignoramos, pra o Asaas não ficar
+    // reenviando à toa.
+    const EVENTOS_CONFIRMACAO = ['PAYMENT_RECEIVED', 'PAYMENT_CONFIRMED'];
+    const EVENTOS_ESTORNO = ['PAYMENT_REFUNDED', 'PAYMENT_CHARGEBACK_REQUESTED', 'PAYMENT_CHARGEBACK_DISPUTE'];
+
+    if (!paymentId || (!EVENTOS_CONFIRMACAO.includes(evento) && !EVENTOS_ESTORNO.includes(evento))) {
       return res.status(200).json({ ignorado: true });
     }
 
@@ -265,9 +282,37 @@ router.post(
       return res.status(200).json({ aviso: 'Pagamento sem externalReference — não sei a qual empresa pertence.' });
     }
 
+    // Estorno/chargeback: só bloqueia a empresa se foi ESSA cobrança que a
+    // ativou por último (ultimoPagamentoIdProcessado bate com o paymentId do
+    // evento) — evita bloquear por engano uma empresa que já renovou com
+    // outro pagamento depois deste. Atômico: a condição de "ainda não
+    // bloqueei por causa desse paymentId" está dentro do WHERE do próprio
+    // updateMany, então duas notificações de estorno em paralelo para o
+    // mesmo paymentId só aplicam o bloqueio uma vez.
+    if (EVENTOS_ESTORNO.includes(evento)) {
+      const resultado = await prisma.company.updateMany({
+        where: {
+          id: statusPagamento.companyId,
+          ultimoPagamentoIdProcessado: statusPagamento.paymentId,
+          status: { not: 'BLOCKED' },
+        },
+        data: { status: 'BLOCKED' },
+      });
+
+      if (resultado.count === 0) {
+        return res.status(200).json({ status: statusPagamento.status, aplicado: false });
+      }
+
+      console.warn(
+        `[webhooks/asaas] empresa bloqueada por estorno/chargeback companyId=${statusPagamento.companyId} evento=${evento} paymentId=${statusPagamento.paymentId}`
+      );
+      return res.status(200).json({ companyId: statusPagamento.companyId, status: 'BLOCKED', aplicado: true });
+    }
+
+    // Confirmação de pagamento (PAYMENT_RECEIVED / PAYMENT_CONFIRMED).
     if (!pagamentoAsaasFoiConfirmado(statusPagamento.status)) {
-      // Pendente, vencido, estornado... nada a fazer ainda; o Asaas manda
-      // uma nova notificação quando o status mudar de verdade.
+      // Pendente, vencido... nada a fazer ainda; o Asaas manda uma nova
+      // notificação quando o status mudar de verdade.
       return res.status(200).json({ status: statusPagamento.status, aplicado: false });
     }
 
@@ -276,17 +321,21 @@ router.post(
       return res.status(200).json({ aviso: 'Empresa do externalReference não encontrada.' });
     }
 
-    // Idempotência: o Asaas pode reenviar a mesma notificação mais de uma
-    // vez — sem essa checagem, cada reenvio somaria +30 dias de novo.
-    if (company.ultimoPagamentoIdProcessado === statusPagamento.paymentId) {
-      return res.status(200).json({ status: statusPagamento.status, aplicado: false, motivo: 'já processado' });
-    }
-
     const base = company.nextDueDate && company.nextDueDate.getTime() > Date.now() ? company.nextDueDate : new Date();
     const nextDueDate = new Date(base.getTime() + diasEmMs(MENSALIDADE_DIAS));
 
-    const atualizada = await prisma.company.update({
-      where: { id: company.id },
+    // Idempotência atômica: a condição "ainda não processei esse paymentId"
+    // (`ultimoPagamentoIdProcessado` nulo ou diferente dele) fica dentro do
+    // WHERE do updateMany — não num `if` separado antes de um `update` cego.
+    // Isso fecha a corrida: se duas notificações iguais chegarem em
+    // paralelo, só a primeira encontra uma linha que bate com o WHERE (a
+    // segunda já não encontra mais, porque a primeira já gravou o
+    // paymentId), então `count` é 0 pra ela e nenhum dia é somado em dobro.
+    const resultado = await prisma.company.updateMany({
+      where: {
+        id: company.id,
+        OR: [{ ultimoPagamentoIdProcessado: null }, { ultimoPagamentoIdProcessado: { not: statusPagamento.paymentId } }],
+      },
       data: {
         status: 'ACTIVE',
         nextDueDate,
@@ -295,10 +344,14 @@ router.post(
       },
     });
 
+    if (resultado.count === 0) {
+      return res.status(200).json({ status: statusPagamento.status, aplicado: false, motivo: 'já processado' });
+    }
+
     return res.status(200).json({
-      companyId: atualizada.id,
-      status: atualizada.status,
-      nextDueDate: atualizada.nextDueDate,
+      companyId: company.id,
+      status: 'ACTIVE',
+      nextDueDate,
       aplicado: true,
     });
   })
