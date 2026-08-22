@@ -57,6 +57,20 @@ function headersAsaas(apiKey: string): Record<string, string> {
 }
 
 /**
+ * Monta uma mensagem de erro segura pra logar/propagar quando o Asaas
+ * recusa uma chamada — NUNCA inclui o corpo bruto da resposta (`corpo`),
+ * porque em erros de validação o Asaas costuma ecoar de volta os campos
+ * submetidos (nome, cpfCnpj, email do cliente). Usa só o HTTP status e,
+ * se existir, o código de erro estruturado do Asaas
+ * (`corpo.errors[].code`/`.description`, sem os dados do cliente).
+ */
+function mensagemErroAsaas(prefixo: string, status: number, corpo: any): string {
+  const primeiroErro = Array.isArray(corpo?.errors) ? corpo.errors[0] : undefined;
+  const codigo = primeiroErro?.code;
+  return codigo ? `${prefixo} (HTTP ${status}, código: ${codigo})` : `${prefixo} (HTTP ${status})`;
+}
+
+/**
  * O Asaas exige um "customer" cadastrado antes de criar a cobrança. Busca
  * por CNPJ (evita duplicar o cliente a cada renovação) e cria na hora se
  * ainda não existir.
@@ -72,7 +86,7 @@ async function buscarOuCriarCliente(
   });
   const corpoBusca: any = await busca.json();
   if (!busca.ok) {
-    throw new Error(`Asaas recusou a busca do cliente (HTTP ${busca.status}): ${JSON.stringify(corpoBusca)}`);
+    throw new Error(mensagemErroAsaas('Asaas recusou a busca do cliente', busca.status, corpoBusca));
   }
 
   const existente = corpoBusca.data?.[0];
@@ -90,7 +104,7 @@ async function buscarOuCriarCliente(
   });
   const corpoCriacao: any = await criacao.json();
   if (!criacao.ok || !corpoCriacao.id) {
-    throw new Error(`Asaas recusou a criação do cliente (HTTP ${criacao.status}): ${JSON.stringify(corpoCriacao)}`);
+    throw new Error(mensagemErroAsaas('Asaas recusou a criação do cliente', criacao.status, corpoCriacao));
   }
   return corpoCriacao.id;
 }
@@ -136,7 +150,7 @@ export async function criarCobrancaPix(
   });
   const corpo: any = await resposta.json();
   if (!resposta.ok || !corpo.id) {
-    throw new Error(`Asaas recusou a criação da cobrança PIX (HTTP ${resposta.status}): ${JSON.stringify(corpo)}`);
+    throw new Error(mensagemErroAsaas('Asaas recusou a criação da cobrança PIX', resposta.status, corpo));
   }
 
   const qr = await fetch(`${ASAAS_API_BASE}/payments/${corpo.id}/pixQrCode`, {
@@ -144,7 +158,7 @@ export async function criarCobrancaPix(
   });
   const dadosQr: any = await qr.json();
   if (!qr.ok || !dadosQr.encodedImage || !dadosQr.payload) {
-    throw new Error(`Asaas não retornou QR Code PIX para a cobrança ${corpo.id} (HTTP ${qr.status}): ${JSON.stringify(dadosQr)}`);
+    throw new Error(mensagemErroAsaas(`Asaas não retornou QR Code PIX para a cobrança ${corpo.id}`, qr.status, dadosQr));
   }
 
   return {
@@ -194,7 +208,7 @@ export async function consultarPagamento(paymentId: string): Promise<StatusPagam
     throw new PagamentoAsaasNaoEncontradoError(paymentId);
   }
   if (!resposta.ok) {
-    throw new Error(`Asaas recusou a consulta do pagamento ${paymentId} (HTTP ${resposta.status}): ${JSON.stringify(corpo)}`);
+    throw new Error(mensagemErroAsaas(`Asaas recusou a consulta do pagamento ${paymentId}`, resposta.status, corpo));
   }
 
   return {
