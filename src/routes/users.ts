@@ -27,6 +27,7 @@ const cadastroSchema = z.object({
   enderecoCidade: z.string().optional(),
   enderecoEstado: z.string().optional(),
   fotoUrl: z.string().url().optional(),
+  origem: z.enum(['QRCODE', 'NFC', 'LINK_WEB', 'MANUAL']).optional(),
   senha: z.string().min(6),
 });
 
