@@ -11,6 +11,18 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Como o cadastro do usuário chegou ao sistema — usado pelo admin-dashboard
+// pra segmentar novos usuários por canal de aquisição (GET /admin/users-stats).
+// LINK_WEB é o fluxo de 1 clique app/authorize.html -> app/register-user.html
+// (repositório fixopass-painel-web); os demais pontos de entrada continuam
+// gravando MANUAL até serem instrumentados.
+enum OrigemCadastro {
+  QRCODE
+  NFC
+  LINK_WEB
+  MANUAL
+}
+
 enum CampoDado {
   NOME
   TELEFONE
@@ -83,32 +95,28 @@ enum OAuthClientStatus {
 // USUÁRIO (dono dos dados)
 // -----------------------------
 model User {
-  id                  String    @id @default(uuid())
-  nomeCompleto        String
-  telefone            String
-  email               String    @unique
-  cpf                 String    @unique
-  rg                  String?
-  dataNascimento      DateTime?
-  // `endereco` continua sendo o endereço em texto livre — é o que o
-  // mobile-app (CadastroScreen.tsx) já envia e o que POST /users sempre
-  // aceitou, então não pode ser removido/renomeado sem quebrar esse cliente.
-  // Os campos abaixo são NOVOS e opcionais: quando o usuário preenche o
-  // endereço estruturado pela web (Meus dados), eles ficam disponíveis além
-  // do texto livre — não o substituem.
-  endereco            String?
-  enderecoCep         String?
-  enderecoLogradouro  String?
-  enderecoNumero      String?
-  enderecoComplemento String?
-  enderecoBairro      String?
-  enderecoCidade      String?
-  enderecoEstado      String?
-  fotoUrl             String?
-  expoPushToken       String?
-  senhaHash           String
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  id                   String    @id @default(uuid())
+  nomeCompleto         String
+  telefone             String
+  email                String    @unique
+  cpf                  String    @unique
+  rg                   String?
+  dataNascimento       DateTime?
+  endereco             String?
+  enderecoCep          String?
+  enderecoLogradouro   String?
+  enderecoNumero       String?
+  enderecoComplemento  String?
+  enderecoBairro       String?
+  enderecoCidade       String?
+  enderecoEstado       String?
+  fotoUrl              String?
+  expoPushToken        String?
+  senhaHash            String
+  // Canal pelo qual o cadastro chegou — ver comentário no enum OrigemCadastro.
+  origem               OrigemCadastro @default(MANUAL)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   autorizacoes         Autorizacao[]
   solicitacoes         SolicitacaoCompartilhamento[]
@@ -118,28 +126,19 @@ model User {
   @@map("users")
 }
 
-// -----------------------------
-// PRIVACIDADE POR CATEGORIA (o que o usuário libera, por padrão, pra cada
-// TIPO de estabelecimento — ex.: libera Foto+Nome+Telefone pra restaurante,
-// mas não CPF/RG/Endereço). Aplicada em POST /auth/request: filtra
-// camposPedidos pelos campos liberados na categoria da empresa solicitante
-// (ou em GERAL, se não houver regra específica pra aquela categoria) antes
-// de a pessoa nem chegar a ver a tela de aprovação — não é uma segunda
-// camada por cima do consentimento pontual, é um filtro que roda ANTES dele.
-// -----------------------------
 model PrivacidadeCategoria {
-  id             String               @id @default(uuid())
+  id             String   @id @default(uuid())
   userId         String
   categoria      CategoriaPrivacidade
-  foto           Boolean              @default(false)
-  nome           Boolean              @default(true)
-  cpf            Boolean              @default(false)
-  rg             Boolean              @default(false)
-  dataNascimento Boolean              @default(false)
-  telefone       Boolean              @default(false)
-  endereco       Boolean              @default(false)
-  createdAt      DateTime             @default(now())
-  updatedAt      DateTime             @updatedAt
+  foto           Boolean  @default(false)
+  nome           Boolean  @default(true)
+  cpf            Boolean  @default(false)
+  rg             Boolean  @default(false)
+  dataNascimento Boolean  @default(false)
+  telefone       Boolean  @default(false)
+  endereco       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -147,9 +146,6 @@ model PrivacidadeCategoria {
   @@map("privacidade_categorias")
 }
 
-// -----------------------------
-// EMPRESA
-// -----------------------------
 model Company {
   id                          String           @id @default(uuid())
   nome                        String
@@ -162,27 +158,16 @@ model Company {
   logoUrl                     String?
   resetPasswordTokenHash      String?          @unique
   resetPasswordExpiresAt      DateTime?
-  // Encerramento de conta (DELETE /companies/me) é SOFT DELETE — ao contrário do
-  // usuário comum (que tem exclusão definitiva/LGPD via DELETE /users/me), a
-  // empresa é só marcada como inativa. Isso preserva os logs de auditoria
-  // (LogAcesso) e o histórico de autorizações/solicitações ligados a ela, que
-  // continuam existindo no banco mesmo depois do encerramento.
   ativa                       Boolean          @default(true)
   encerradaEm                 DateTime?
-  // Assinatura/pagamento — dimensão INDEPENDENTE de `ativa` (aquilo é "a
-  // empresa fechou a própria conta"; isto é "a mensalidade está em dia").
-  // Ver src/lib/assinatura.ts pra transição automática TRIAL->EXPIRED e
-  // ACTIVE->EXPIRED, e POST /auth/request pra onde isso bloqueia pareamento.
   status                      StatusAssinatura @default(TRIAL)
   trialEndsAt                 DateTime?
   nextDueDate                 DateTime?
   precoMensalCentavos         Int?
-  // Id do último pagamento do Mercado Pago já aplicado (soma de +30 dias já
-  // feita) — guarda contra processar o mesmo pagamento duas vezes, já que o
-  // Mercado Pago pode reenviar a mesma notificação de webhook mais de uma
-  // vez (comportamento documentado deles, não é bug). Ver POST
-  // /webhooks/mercadopago.
   ultimoPagamentoIdProcessado String?
+  // Marca empresas de teste/demonstração — usada pelo admin-dashboard pra
+  // excluir esses registros das métricas por padrão. Ver GET /admin/dashboard-stats.
+  isTest                      Boolean          @default(false)
   createdAt                   DateTime         @default(now())
   updatedAt                   DateTime         @updatedAt
 
@@ -196,18 +181,6 @@ model Company {
   @@map("companies")
 }
 
-// -----------------------------
-// OAUTH CLIENT (canal WEB/API — credenciais OAuth2 de um sistema externo,
-// ex.: o cardápio online da empresa). Uma empresa pode ter mais de um
-// client (cardápio, ERP, etc.), cada um com seu próprio client_id/
-// client_secret e redirect URIs cadastradas — propositalmente separado da
-// apiKeyHash usada pelo ERP (companyAuth): a API Key do ERP roda 100%
-// server-to-server e nunca sai do servidor da empresa; um client_secret
-// OAuth também nunca deve ir para o navegador. Neste projeto o client_id
-// também nunca chega a ir pro navegador (ver comentário em routes/oauth.ts)
-// — mais forte que o mínimo exigido pelo OAuth2 "puro", que trata client_id
-// como público.
-// -----------------------------
 model OAuthClient {
   id               String            @id @default(uuid())
   companyId        String
@@ -219,7 +192,7 @@ model OAuthClient {
   createdAt        DateTime          @default(now())
   revokedAt        DateTime?
 
-  company      Company                       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company      Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   solicitacoes SolicitacaoCompartilhamento[]
   codes        OAuthCode[]
   tokens       OAuthToken[]
@@ -228,7 +201,6 @@ model OAuthClient {
   @@map("oauth_clients")
 }
 
-// Unidades da empresa (ex: filiais)
 model Unidade {
   id          String   @id @default(uuid())
   companyId   String
@@ -237,13 +209,12 @@ model Unidade {
   qrCodeToken String   @unique @default(uuid())
   createdAt   DateTime @default(now())
 
-  company      Company                       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company      Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   solicitacoes SolicitacaoCompartilhamento[]
 
   @@map("unidades")
 }
 
-// Quais campos cada empresa solicita por padrão (config do painel da empresa)
 model CampoSolicitadoEmpresa {
   id          String    @id @default(uuid())
   companyId   String
@@ -256,9 +227,6 @@ model CampoSolicitadoEmpresa {
   @@map("campos_solicitados_empresa")
 }
 
-// -----------------------------
-// AUTORIZAÇÃO (usuário -> empresa, campos liberados permanentemente)
-// -----------------------------
 model Autorizacao {
   id              String      @id @default(uuid())
   userId          String
@@ -267,12 +235,6 @@ model Autorizacao {
   ativo           Boolean     @default(true)
   dataAutorizacao DateTime    @default(now())
   dataRevogacao   DateTime?
-  // Contador de pareamentos: incrementado a cada POST /customer/share
-  // aprovado (usuário lendo o QR/NFC dessa empresa de novo), não em
-  // GET /customer/:id (isso é consulta direta do ERP, não um evento de
-  // NFC/QR de verdade — mesmo critério que já separa os métodos em
-  // LogAcesso). accessCount começa em 1 (a própria criação já é o
-  // primeiro pareamento) e lastAccessedAt acompanha.
   accessCount     Int         @default(1)
   lastAccessedAt  DateTime    @default(now())
 
@@ -283,84 +245,35 @@ model Autorizacao {
   @@map("autorizacoes")
 }
 
-// -----------------------------
-// SOLICITAÇÃO DE COMPARTILHAMENTO (evento pontual via NFC/QR/WEB_API)
-// -----------------------------
 model SolicitacaoCompartilhamento {
-  id            String              @id @default(uuid())
-  // Opcional: NFC/QR e o fluxo iniciado pelo ERP sempre sabem o usuário na
-  // hora de criar a solicitação (é quem escaneou, ou quem foi identificado
-  // por CPF/telefone). O canal WEB/API é o único caso em que a solicitação
-  // nasce ANTES de sabermos o usuário — o cardápio cria a solicitação, e só
-  // quando a pessoa loga no FIXO PASS pra ver a tela de consentimento
-  // (GET /oauth/authorize/:requestId) é que userId é preenchido. Depois de
-  // preenchido, nunca mais muda.
-  userId        String?
-  companyId     String
-  unidadeId     String?
-  // Preenchidos apenas para metodo = WEB_API — de qual OAuthClient veio o
-  // pedido e para qual redirect URI o navegador deve voltar depois de
-  // autorizar. NFC/QR nunca preenchem isso (a "volta" deles é o próprio
-  // app, não um redirect HTTP). Nome da coluna mantido em português
-  // (integracaoId) de propósito: esta tabela é o núcleo compartilhado pelos
-  // três canais, e a menor mudança possível nela minimiza o risco de afetar
-  // NFC/QR — só o FK aponta agora pra oauth_clients em vez de integracoes.
-  integracaoId  String?
-  redirectUri   String?
-  // Finalidade em texto livre, mostrada na tela de consentimento
-  // (ex.: "Preenchimento dos dados de entrega"). Opcional — NFC/QR não usam.
-  purpose       String?
-  // Opaco, ecoado de volta pro client exatamente como recebido em
-  // POST /oauth/authorize (padrão OAuth2 — nunca inventamos nem
-  // sobrescrevemos o valor do cliente). Se o client não mandar state,
-  // POST /oauth/authorize/:requestId cai no requestId como valor de
-  // correlação (compatibilidade com a integração já existente do cardápio,
-  // que ainda não manda state próprio). Fica aqui (na solicitação) e não no
-  // OAuthCode porque precisa existir ANTES do code — o code só nasce quando
-  // o usuário aprova.
-  state         String?
-  metodo        MetodoIdentificacao
+  id String @id @default(uuid())
+  userId String?
+  companyId String
+  unidadeId String?
+  integracaoId String?
+  redirectUri String?
+  purpose String?
+  state String?
+  metodo MetodoIdentificacao
   camposPedidos CampoDado[]
-  status        StatusSolicitacao   @default(PENDENTE)
-  // Validade da PRÓPRIA solicitação (o usuário precisa aprovar/negar antes
-  // disso) — só setado para WEB_API. NFC/QR resolvem na hora (o app já está
-  // com a pessoa em mãos), então nunca precisaram de expiração própria.
-  // Checado sob demanda (mesmo padrão de verificarAssinatura em
-  // lib/assinatura.ts), sem cron/scheduler novo.
-  expiraEm      DateTime?
-  criadaEm      DateTime            @default(now())
-  resolvidaEm   DateTime?
+  status StatusSolicitacao @default(PENDENTE)
+  expiraEm DateTime?
+  criadaEm DateTime @default(now())
+  resolvidaEm DateTime?
 
-  user       User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  company    Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  unidade    Unidade?     @relation(fields: [unidadeId], references: [id])
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  unidade Unidade? @relation(fields: [unidadeId], references: [id])
   integracao OAuthClient? @relation(fields: [integracaoId], references: [id], onDelete: Cascade)
-  oauthCode  OAuthCode?
+  oauthCode OAuthCode?
 
   @@map("solicitacoes_compartilhamento")
 }
 
-// -----------------------------
-// OAUTH CODE (canal WEB/API) — o "authorization_code" temporário entregue
-// ao navegador depois que o usuário aprova em
-// POST /oauth/authorize/:requestId, e trocado pelo BACKEND do sistema
-// externo (nunca pelo navegador) em POST /oauth/token.
-//
-// Guardamos só o HASH (sha256) do código, indexado — o mesmo padrão já
-// usado para resetPasswordTokenHash em Company (ver companies.ts), e
-// deliberadamente diferente do bcrypt "comparar contra todas as linhas"
-// usado em companyAuth/identifyActor: ali há poucas empresas ativas, aqui
-// os códigos se acumulam (um por tentativa de autorização) e o lookup
-// precisa continuar O(1) mesmo depois de meses em produção.
-//
-// usedAt marca consumo (proteção contra replay); a troca em POST
-// /oauth/token usa um update condicional (WHERE usedAt IS NULL) para o
-// "uso único" valer mesmo sob duas requisições concorrentes.
-// -----------------------------
 model OAuthCode {
-  id            String      @id @default(uuid())
-  codeHash      String      @unique
-  requestId     String      @unique
+  id            String    @id @default(uuid())
+  codeHash      String    @unique
+  requestId     String    @unique
   oauthClientId String
   companyId     String
   userId        String
@@ -368,7 +281,7 @@ model OAuthCode {
   redirectUri   String
   expiresAt     DateTime
   usedAt        DateTime?
-  createdAt     DateTime    @default(now())
+  createdAt     DateTime  @default(now())
 
   request     SolicitacaoCompartilhamento @relation(fields: [requestId], references: [id], onDelete: Cascade)
   oauthClient OAuthClient                 @relation(fields: [oauthClientId], references: [id], onDelete: Cascade)
@@ -378,30 +291,17 @@ model OAuthCode {
   @@map("oauth_codes")
 }
 
-// -----------------------------
-// OAUTH TOKEN (canal WEB/API) — access_token emitido na troca do code em
-// POST /oauth/token (Bearer, curta duração — ver ACCESS_TOKEN_TTL_MS em
-// lib/oauthToken.ts). Diferente do code (uso único), o token é reutilizável
-// dentro da validade: o backend do sistema externo pode chamar
-// GET /oauth/userinfo mais de uma vez com o mesmo token, sem precisar de um
-// novo consentimento a cada chamada — essa é a diferença real entre "canal
-// Web/API" e "SSO de verdade" que motivou esta tabela existir.
-//
-// Só o hash (sha256) é persistido, mesmo padrão do OAuthCode. revokedAt
-// existe para permitir revogação futura (ainda sem endpoint dedicado nesta
-// entrega) sem precisar de mais uma migration depois.
-// -----------------------------
 model OAuthToken {
-  id            String      @id @default(uuid())
-  tokenHash     String      @unique
+  id            String    @id @default(uuid())
+  tokenHash     String    @unique
   oauthClientId String
-  oauthCodeId   String      @unique
+  oauthCodeId   String    @unique
   companyId     String
   userId        String
   scopes        CampoDado[]
   expiresAt     DateTime
   revokedAt     DateTime?
-  createdAt     DateTime    @default(now())
+  createdAt     DateTime  @default(now())
 
   oauthClient OAuthClient @relation(fields: [oauthClientId], references: [id], onDelete: Cascade)
   oauthCode   OAuthCode   @relation(fields: [oauthCodeId], references: [id], onDelete: Cascade)
@@ -410,17 +310,14 @@ model OAuthToken {
   @@map("oauth_tokens")
 }
 
-// -----------------------------
-// LOG DE ACESSO (histórico/auditoria — obrigatório por segurança)
-// -----------------------------
 model LogAcesso {
-  id             String              @id @default(uuid())
+  id             String   @id @default(uuid())
   userId         String
   companyId      String
   camposEnviados CampoDado[]
   metodo         MetodoIdentificacao
   ipOrigem       String?
-  timestamp      DateTime            @default(now())
+  timestamp      DateTime @default(now())
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
