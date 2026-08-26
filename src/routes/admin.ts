@@ -184,6 +184,37 @@ router.delete(
 );
 
 router.get(
+    '/companies/:id/logs',
+    asyncHandler(async (req, res) => {
+          const company = await prisma.company.findUnique({ where: { id: req.params.id } });
+          if (!company) {
+                  return res.status(404).json({ error: 'Empresa nao encontrada.' });
+          }
+
+          const logs = await prisma.logAcesso.findMany({
+                  where: { companyId: req.params.id },
+                  orderBy: { timestamp: 'desc' },
+                  take: 200,
+          });
+
+          const autorizacoes = await prisma.autorizacao.findMany({
+                  where: { companyId: req.params.id, userId: { in: [...new Set(logs.map((l) => l.userId))] } },
+                  select: { userId: true, accessCount: true },
+          });
+          const accessCountPorUsuario = new Map(autorizacoes.map((a) => [a.userId, a.accessCount]));
+
+          const resposta = logs.map((log) => ({
+                  timestamp: log.timestamp,
+                  metodo: log.metodo,
+                  accessCount: accessCountPorUsuario.get(log.userId) ?? 0,
+                  camposRecebidos: log.camposEnviados,
+          }));
+
+          return res.status(200).json(resposta);
+    })
+  );
+
+router.get(
   '/dashboard-stats',
   asyncHandler(async (req, res) => {
     const includeTest = req.query.includeTest === 'true';
