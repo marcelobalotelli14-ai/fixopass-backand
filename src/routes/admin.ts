@@ -9,16 +9,6 @@ import { listarCandidatosLimpeza, apagarCandidatosLimpeza } from '../lib/limpeza
 const router = Router();
 router.use(isAdmin);
 
-/**
- * POST /admin/auth
- * Endpoint dedicado só pra testar o X-ADMIN-SECRET, sem precisar buscar
- * stats/companies inteiros só pra descobrir se a senha está certa (o
- * admin-dashboard.html ainda valida via carregarTudo() — esta rota fica
- * disponível pra quando quiser trocar por essa checagem mais leve). Se a
- * requisição chegou até aqui é porque o middleware `isAdmin` já validou o
- * segredo — então só confirma com 200. Erros (401 segredo errado, 503 não
- * configurado) já saem direto do middleware, antes de chegar na rota.
- */
 router.post(
   '/auth',
   asyncHandler(async (_req, res) => {
@@ -26,16 +16,59 @@ router.post(
   })
 );
 
-/**
- * GET /admin/companies
- * Lista todas as empresas (inclusive as com `ativa:false`/encerradas — o
- * Super Admin precisa ver o quadro completo) com status de assinatura,
- * dias de trial restantes e o preço mensal (customizado ou o padrão).
- */
+const SORTABLE_FIELDS = ['nome', 'createdAt', 'status', 'precoMensalCentavos', 'trialEndsAt'];
+
+const companiesQuerySchema = z.object({
+  page: z.coerce.number().int().positive().optional(),
+  pageSize: z.coerce.number().int().positive().max(200).optional(),
+  search: z.string().trim().min(1).optional(),
+  status: z.enum(['ACTIVE', 'TRIAL', 'EXPIRED', 'BLOCKED']).optional(),
+  categoria: z.enum(['RESTAURANTE', 'CONDOMINIO', 'HOSPITAL', 'HOTEL', 'LOJA', 'OUTROS']).optional(),
+  sortBy: z.enum(SORTABLE_FIELDS).optional(),
+  order: z.enum(['asc', 'desc']).default('desc'),
+});
+
 router.get(
   '/companies',
-  asyncHandler(async (_req, res) => {
-    const companies = await prisma.company.findMany({ orderBy: { createdAt: 'desc' } });
+  asyncHandler(async (req, res) => {
+    const parsed = companiesQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Parametros invalidos.', detalhes: parsed.error.flatten() });
+    }
+    const { page, pageSize, search, status, categoria, sortBy, order } = parsed.data;
+
+    const where = {};
+    if (status) where.status = status;
+    if (categoria) where.categoria = categoria;
+    if (search) {
+      where.OR = [
+        { nome: { contains: search, mode: 'insensitive' } },
+        { cnpj: { contains: search, mode: 'insensitive' } },
+        { emailContato: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    const orderBy = sortBy ? { [sortBy]: order } : { createdAt: 'desc' };
+
+    const paginando = page !== undefined || pageSize !== undefined;
+    const take = pageSize ?? 20;
+    const currentPage = page ?? 1;
+
+    const [companies, total] = await Promise.all([
+      prisma.company.findMany({
+        where,
+        orderBy,
+        ...(paginando ? { skip: (currentPage - 1) * take, take } : {}),
+      }),
+      paginando ? prisma.company.count({ where }) : Promise.resolve(undefined),
+    ]);
+
+    const somaPorEmpresa = await prisma.autorizacao.groupBy({
+      by: ['companyId'],
+      where: { companyId: { in: companies.map((c) => c.id) } },
+      _sum: { accessCount: true },
+    });
+    const accessCountPorEmpresa = new Map(somaPorEmpresa.map((s) => [s.companyId, s._sum.accessCount ?? 0]));
 
     const resposta = companies.map((c) => ({
       id: c.id,
@@ -50,10 +83,22 @@ router.get(
       nextDueDate: c.nextDueDate,
       precoMensalCentavos: c.precoMensalCentavos ?? PRECO_PADRAO_CENTAVOS,
       precoCustomizado: c.precoMensalCentavos !== null,
+      accessCount: accessCountPorEmpresa.get(c.id) ?? 0,
+      isTest: c.isTest,
       createdAt: c.createdAt,
     }));
 
-    return res.status(200).json(resposta);
+    if (!paginando) {
+      return res.status(200).json(resposta);
+    }
+
+    return res.status(200).json({
+      empresas: resposta,
+      page: currentPage,
+      pageSize: take,
+      total: total ?? 0,
+      totalPages: Math.max(1, Math.ceil((total ?? 0) / take)),
+    });
   })
 );
 
@@ -62,44 +107,40 @@ const editSchema = z
     precoMensalCentavos: z.number().int().nonnegative().nullable().optional(),
     diasExtras: z.number().int().optional(),
     status: z.enum(['ACTIVE', 'TRIAL', 'EXPIRED', 'BLOCKED']).optional(),
+    isTest: z.boolean().optional(),
   })
-  .refine((d) => d.precoMensalCentavos !== undefined || d.diasExtras !== undefined || d.status !== undefined, {
-    message: 'Informe ao menos um campo para atualizar (precoMensalCentavos, diasExtras ou status).',
-  });
+  .refine(
+    (d) =>
+      d.precoMensalCentavos !== undefined ||
+      d.diasExtras !== undefined ||
+      d.status !== undefined ||
+      d.isTest !== undefined,
+    {
+      message: 'Informe ao menos um campo para atualizar (precoMensalCentavos, diasExtras, status ou isTest).',
+    }
+  );
 
-/**
- * PUT /admin/companies/:id
- * Super Admin edita preço customizado, soma/subtrai dias de trial e/ou
- * troca o status manualmente — os 3 num único endpoint, tudo opcional.
- *
- * `diasExtras`: some (ou subtrai, se negativo) a partir do trialEndsAt
- * atual (ou de agora, se não havia trial vigente). Se `status` não vier
- * junto nesse mesmo PUT e o novo trialEndsAt cair no futuro, o status volta
- * pra TRIAL sozinho — é o que o botão "+15 Dias de Teste" espera: dar mais
- * tempo já destrava a empresa que estava EXPIRED, sem precisar de um
- * segundo clique pra também mudar o status manualmente.
- */
 router.put(
   '/companies/:id',
   asyncHandler(async (req, res) => {
     const parsed = editSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+      return res.status(400).json({ error: 'Dados invalidos.', detalhes: parsed.error.flatten() });
     }
 
     const company = await prisma.company.findUnique({ where: { id: req.params.id } });
     if (!company) {
-      return res.status(404).json({ error: 'Empresa não encontrada.' });
+      return res.status(404).json({ error: 'Empresa nao encontrada.' });
     }
 
-    const data: {
-      precoMensalCentavos?: number | null;
-      trialEndsAt?: Date;
-      status?: 'ACTIVE' | 'TRIAL' | 'EXPIRED' | 'BLOCKED';
-    } = {};
+    const data = {};
 
     if (parsed.data.precoMensalCentavos !== undefined) {
       data.precoMensalCentavos = parsed.data.precoMensalCentavos;
+    }
+
+    if (parsed.data.isTest !== undefined) {
+      data.isTest = parsed.data.isTest;
     }
 
     if (parsed.data.diasExtras !== undefined) {
@@ -125,19 +166,12 @@ router.put(
   })
 );
 
-/**
- * DELETE /admin/companies/:id
- * Mesmo soft-delete de sempre (DELETE /companies/me), só que o Super Admin
- * pode acionar em nome de qualquer empresa — decisão deliberada de manter
- * consistente com o resto do sistema: nunca apaga unidades/logs/histórico
- * de verdade, só marca `ativa:false`.
- */
 router.delete(
   '/companies/:id',
   asyncHandler(async (req, res) => {
     const company = await prisma.company.findUnique({ where: { id: req.params.id } });
     if (!company) {
-      return res.status(404).json({ error: 'Empresa não encontrada.' });
+      return res.status(404).json({ error: 'Empresa nao encontrada.' });
     }
 
     await prisma.company.update({
@@ -149,15 +183,14 @@ router.delete(
   })
 );
 
-/**
- * GET /admin/dashboard-stats
- * Métricas globais pro topo do painel admin.
- */
 router.get(
   '/dashboard-stats',
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
+    const includeTest = req.query.includeTest === 'true';
+
     const companies = await prisma.company.findMany({
-      select: { ativa: true, status: true, precoMensalCentavos: true },
+      where: includeTest ? undefined : { isTest: false },
+      select: { ativa: true, status: true, precoMensalCentavos: true, id: true },
     });
 
     const emAtividade = companies.filter((c) => c.ativa);
@@ -167,7 +200,10 @@ router.get(
 
     const faturamentoEstimadoCentavos = ativas.reduce((soma, c) => soma + (c.precoMensalCentavos ?? PRECO_PADRAO_CENTAVOS), 0);
 
-    const somaPareamentos = await prisma.autorizacao.aggregate({ _sum: { accessCount: true } });
+    const somaPareamentos = await prisma.autorizacao.aggregate({
+      _sum: { accessCount: true },
+      where: includeTest ? undefined : { companyId: { in: companies.map((c) => c.id) } },
+    });
 
     return res.status(200).json({
       totalEmpresas: companies.length,
@@ -181,19 +217,199 @@ router.get(
   })
 );
 
-/**
- * GET /admin/dados-teste
- * Preview (NÃO apaga nada) dos cadastros de empresa e usuário que a
- * heurística de src/lib/limpezaDados.ts identifica como FAKE/TESTE — os
- * mesmos dados plantados por prisma/seed.ts, mais qualquer nome/e-mail/cnpj
- * com cara de teste (domínios como example.com, palavras "teste"/"fake"/
- * "demo"/...). A conta configurada em ADMIN_MASTER_EMAIL/ADMIN_MASTER_CPF
- * nunca aparece aqui, mesmo que bata na heurística.
- *
- * SEMPRE confira esta lista manualmente antes de chamar
- * DELETE /admin/dados-teste com os ids — é uma heurística por
- * nome/e-mail/CNPJ/CPF, não uma flag confiável no banco.
- */
+router.get(
+  '/pairings-stats',
+  asyncHandler(async (req, res) => {
+    const daysParsed = z.coerce.number().int().positive().max(365).default(30).safeParse(req.query.days);
+    if (!daysParsed.success) {
+      return res.status(400).json({ error: 'Parametro days invalido.', detalhes: daysParsed.error.flatten() });
+    }
+    const days = daysParsed.data;
+    const desde = new Date(Date.now() - diasEmMs(days));
+
+    const linhas = await prisma.$queryRaw`
+      SELECT DATE(\"timestamp\") AS dia, COUNT(*) AS total
+      FROM \"logs_acesso\"
+      WHERE \"timestamp\" >= ${desde}
+      GROUP BY DATE(\"timestamp\")
+      ORDER BY DATE(\"timestamp\") ASC
+    `;
+
+    return res.status(200).json({
+      diasConsiderados: days,
+      serie: linhas.map((l) => ({ data: l.dia, total: Number(l.total) })),
+    });
+  })
+);
+
+router.get(
+  '/categories-stats',
+  asyncHandler(async (req, res) => {
+    const includeTest = req.query.includeTest === 'true';
+
+    const companies = await prisma.company.findMany({
+      where: includeTest ? undefined : { isTest: false },
+      select: { categoria: true, status: true, ativa: true, precoMensalCentavos: true },
+    });
+
+    const porCategoria = new Map();
+    for (const c of companies) {
+      const atual = porCategoria.get(c.categoria) ?? {
+        categoria: c.categoria,
+        totalEmpresas: 0,
+        ativas: 0,
+        faturamentoEstimadoCentavos: 0,
+      };
+      atual.totalEmpresas += 1;
+      if (c.ativa) {
+        atual.ativas += 1;
+        if (c.status === 'ACTIVE') {
+          atual.faturamentoEstimadoCentavos += c.precoMensalCentavos ?? PRECO_PADRAO_CENTAVOS;
+        }
+      }
+      porCategoria.set(c.categoria, atual);
+    }
+
+    return res.status(200).json({
+      categorias: Array.from(porCategoria.values()).sort((a, b) => b.totalEmpresas - a.totalEmpresas),
+    });
+  })
+);
+
+router.get(
+  '/alerts',
+  asyncHandler(async (_req, res) => {
+    const companies = await prisma.company.findMany({
+      where: {
+        isTest: false,
+        ativa: true,
+        OR: [{ status: 'TRIAL' }, { status: 'EXPIRED' }, { status: 'BLOCKED' }],
+      },
+    });
+
+    const comDaysLeft = companies.map((c) => ({ ...c, daysLeftInTrial: calcularDaysLeftInTrial(c) }));
+
+    const trialAcabando = comDaysLeft
+      .filter((c) => c.status === 'TRIAL' && c.daysLeftInTrial <= 5)
+      .sort((a, b) => a.daysLeftInTrial - b.daysLeftInTrial);
+
+    const inadimplentes = comDaysLeft
+      .filter((c) => c.status === 'EXPIRED' || c.status === 'BLOCKED')
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    const paraResposta = (c) => ({
+      tipo: c.status === 'TRIAL' ? 'TRIAL_VENCENDO' : 'INADIMPLENTE',
+      id: c.id,
+      nome: c.nome,
+      cnpj: c.cnpj,
+      emailContato: c.emailContato,
+      status: c.status,
+      trialEndsAt: c.trialEndsAt,
+      daysLeftInTrial: c.daysLeftInTrial,
+      nextDueDate: c.nextDueDate,
+    });
+
+    const alertas = [...trialAcabando.map(paraResposta), ...inadimplentes.map(paraResposta)];
+
+    return res.status(200).json({
+      total: alertas.length,
+      alertas,
+    });
+  })
+);
+
+router.get(
+  '/users-stats',
+  asyncHandler(async (req, res) => {
+    const daysParsed = z.coerce.number().int().positive().default(30).safeParse(req.query.days);
+    if (!daysParsed.success) {
+      return res.status(400).json({ error: 'Parametro days invalido.', detalhes: daysParsed.error.flatten() });
+    }
+    const days = daysParsed.data;
+
+    const desde = new Date(Date.now() - diasEmMs(days));
+    const desdeAtividade = new Date(Date.now() - diasEmMs(30));
+
+    const [totalUsuarios, novosNoPeriodo, porOrigem, usuariosAtivosIds] = await Promise.all([
+      prisma.user.count(),
+      prisma.user.count({ where: { createdAt: { gte: desde } } }),
+      prisma.user.groupBy({ by: ['origem'], _count: { _all: true } }),
+      prisma.logAcesso.findMany({
+        where: { timestamp: { gte: desdeAtividade } },
+        select: { userId: true },
+        distinct: ['userId'],
+      }),
+    ]);
+
+    const ativos = usuariosAtivosIds.length;
+
+    return res.status(200).json({
+      totalUsuarios,
+      novosNoPeriodo,
+      periodoDias: days,
+      ativos,
+      inativos: totalUsuarios - ativos,
+      porOrigem: porOrigem.map((g) => ({ origem: g.origem, total: g._count._all })),
+    });
+  })
+);
+
+router.get(
+  '/dashboard-history',
+  asyncHandler(async (req, res) => {
+    const daysParsed = z.coerce.number().int().positive().max(365).default(30).safeParse(req.query.days);
+    if (!daysParsed.success) {
+      return res.status(400).json({ error: 'Parametro days invalido.', detalhes: daysParsed.error.flatten() });
+    }
+    const days = daysParsed.data;
+    const includeTest = req.query.includeTest === 'true';
+
+    const hojeUtc = new Date(Date.now());
+    const inicioHojeUtc = Date.UTC(hojeUtc.getUTCFullYear(), hojeUtc.getUTCMonth(), hojeUtc.getUTCDate());
+    const primeiroDiaJanela = inicioHojeUtc - (days - 1) * 24 * 60 * 60 * 1000;
+
+    const [companies, logs] = await Promise.all([
+      prisma.company.findMany({
+        where: includeTest ? undefined : { isTest: false },
+        select: { createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      prisma.logAcesso.findMany({
+        where: includeTest ? undefined : { company: { isTest: false } },
+        select: { timestamp: true },
+        orderBy: { timestamp: 'asc' },
+      }),
+    ]);
+
+    const empresasOrdenadas = companies.map((c) => c.createdAt.getTime()).sort((a, b) => a - b);
+    const logsOrdenados = logs.map((l) => l.timestamp.getTime()).sort((a, b) => a - b);
+
+    let ponteiroEmpresas = 0;
+    let ponteiroLogs = 0;
+    const serie = [];
+
+    for (let i = 0; i < days; i++) {
+      const fimDoDia = primeiroDiaJanela + (i + 1) * 24 * 60 * 60 * 1000;
+      while (ponteiroEmpresas < empresasOrdenadas.length && empresasOrdenadas[ponteiroEmpresas] < fimDoDia) {
+        ponteiroEmpresas++;
+      }
+      while (ponteiroLogs < logsOrdenados.length && logsOrdenados[ponteiroLogs] < fimDoDia) {
+        ponteiroLogs++;
+      }
+      const dataDoDia = new Date(primeiroDiaJanela + i * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      serie.push({ data: dataDoDia, totalEmpresas: ponteiroEmpresas, totalPareamentos: ponteiroLogs });
+    }
+
+    return res.status(200).json({
+      aviso:
+        'Historico calculado sob demanda (sem snapshot diario/cron): os valores refletem o estado atual projetado ' +
+        'para tras por data de criacao/acesso, nao o que o painel mostrava naquele dia. Uma empresa excluida ou uma ' +
+        'mudanca de marcacao de teste depois do fato nao aparece retroativamente.',
+      serie,
+    });
+  })
+);
+
 router.get(
   '/dados-teste',
   asyncHandler(async (_req, res) => {
@@ -210,34 +426,18 @@ const limpezaSchema = z
   .object({
     companyIds: z.array(z.string().uuid()).default([]),
     userIds: z.array(z.string().uuid()).default([]),
-    // Mensagem de "Valor inválido, esperado true" já sai traduzida pelo
-    // errorMap global (ver src/lib/zodErrorMap.ts) — não precisa de mensagem
-    // customizada aqui.
     confirmar: z.literal(true),
   })
   .refine((d) => d.companyIds.length > 0 || d.userIds.length > 0, {
-    message: 'Informe ao menos um id em companyIds ou userIds (use GET /admin/dados-teste pra obtê-los).',
+    message: 'Informe ao menos um id em companyIds ou userIds (use GET /admin/dados-teste pra obte-los).',
   });
 
-/**
- * DELETE /admin/dados-teste
- * Apaga DEFINITIVAMENTE (hard delete, não é o soft-delete de
- * DELETE /companies/me) as empresas/usuários cujos ids vierem em
- * companyIds/userIds — nunca a conta do Admin Master, e nunca um id que não
- * bata (de novo, no momento desta chamada) na heurística de
- * src/lib/limpezaDados.ts, mesmo que ele apareça no corpo da requisição.
- * `confirmar: true` é obrigatório, exatamente pra evitar apagar por engano
- * ao testar a rota.
- *
- * Fluxo esperado: 1) GET /admin/dados-teste, 2) revisar a lista, 3) DELETE
- * com os ids escolhidos + confirmar:true.
- */
 router.delete(
   '/dados-teste',
   asyncHandler(async (req, res) => {
     const parsed = limpezaSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: 'Dados inválidos.', detalhes: parsed.error.flatten() });
+      return res.status(400).json({ error: 'Dados invalidos.', detalhes: parsed.error.flatten() });
     }
 
     const resultado = await apagarCandidatosLimpeza(parsed.data.companyIds, parsed.data.userIds);
