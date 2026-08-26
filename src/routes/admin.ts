@@ -16,7 +16,7 @@ router.post(
   })
 );
 
-const SORTABLE_FIELDS = ['nome', 'createdAt', 'status', 'precoMensalCentavos', 'trialEndsAt'];
+const SORTABLE_FIELDS = ['nome', 'createdAt', 'status', 'precoMensalCentavos', 'trialEndsAt'] as const;
 
 const companiesQuerySchema = z.object({
   page: z.coerce.number().int().positive().optional(),
@@ -37,7 +37,7 @@ router.get(
     }
     const { page, pageSize, search, status, categoria, sortBy, order } = parsed.data;
 
-    const where = {};
+    const where: Record<string, unknown> = {};
     if (status) where.status = status;
     if (categoria) where.categoria = categoria;
     if (search) {
@@ -48,7 +48,7 @@ router.get(
       ];
     }
 
-    const orderBy = sortBy ? { [sortBy]: order } : { createdAt: 'desc' };
+    const orderBy: Record<string, 'asc' | 'desc'> = sortBy ? { [sortBy]: order } : { createdAt: 'desc' };
 
     const paginando = page !== undefined || pageSize !== undefined;
     const take = pageSize ?? 20;
@@ -57,7 +57,7 @@ router.get(
     const [companies, total] = await Promise.all([
       prisma.company.findMany({
         where,
-        orderBy,
+        orderBy: orderBy as any,
         ...(paginando ? { skip: (currentPage - 1) * take, take } : {}),
       }),
       paginando ? prisma.company.count({ where }) : Promise.resolve(undefined),
@@ -133,7 +133,7 @@ router.put(
       return res.status(404).json({ error: 'Empresa nao encontrada.' });
     }
 
-    const data = {};
+    const data: Record<string, unknown> = {};
 
     if (parsed.data.precoMensalCentavos !== undefined) {
       data.precoMensalCentavos = parsed.data.precoMensalCentavos;
@@ -145,8 +145,9 @@ router.put(
 
     if (parsed.data.diasExtras !== undefined) {
       const base = company.trialEndsAt && company.trialEndsAt.getTime() > Date.now() ? company.trialEndsAt : new Date();
-      data.trialEndsAt = new Date(base.getTime() + diasEmMs(parsed.data.diasExtras));
-      if (parsed.data.status === undefined && data.trialEndsAt.getTime() > Date.now()) {
+      const novoTrialEndsAt = new Date(base.getTime() + diasEmMs(parsed.data.diasExtras));
+      data.trialEndsAt = novoTrialEndsAt;
+      if (parsed.data.status === undefined && novoTrialEndsAt.getTime() > Date.now()) {
         data.status = 'TRIAL';
       }
     }
@@ -258,7 +259,7 @@ router.get(
     const days = daysParsed.data;
     const desde = new Date(Date.now() - diasEmMs(days));
 
-    const linhas = await prisma.$queryRaw`
+    const linhas = await prisma.$queryRaw<{ dia: Date; total: bigint }[]>`
       SELECT DATE(\"timestamp\") AS dia, COUNT(*) AS total
       FROM \"logs_acesso\"
       WHERE \"timestamp\" >= ${desde}
@@ -328,7 +329,7 @@ router.get(
       .filter((c) => c.status === 'EXPIRED' || c.status === 'BLOCKED')
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
-    const paraResposta = (c) => ({
+    const paraResposta = (c: (typeof comDaysLeft)[number]) => ({
       tipo: c.status === 'TRIAL' ? 'TRIAL_VENCENDO' : 'INADIMPLENTE',
       id: c.id,
       nome: c.nome,
